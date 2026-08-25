@@ -1,0 +1,23 @@
+server:
+  port: 91
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/crushCupid
+    username: postgres
+    password: 123456
+    driver-class-name: org.postgresql.Driver
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY:sk-your-deepseek-key}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.7
+
+crush:
+  skill:
+    # GitHub raw 基础地址（远程 skill 调用入口）
+    base-url: https://raw.githubusercontent.com/xiaoheizi8/crush-skills/refs/heads/main/SKILL.md
+    # 本地缓存过期时间（秒）
+    cache-ttl: 3600

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.yzfy.crushcupidserver.model.mapper.ConversationMapper">
+
+    <resultMap id="BaseResultMap" type="cn.yzfy.crushcupidserver.model.entity.Conversation">
+            <id property="id" column="id" />
+            <result property="crushId" column="crush_id" />
+            <result property="role" column="role" />
+            <result property="content" column="content" />
+            <result property="createdAt" column="created_at" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,crush_id,role,content,created_at
+    </sql>
+</mapper>

@@ -36,7 +36,8 @@ public final class CrushConverter {
         c.setKnowDuration(dto.getKnowDuration());
         c.setRelationshipStatus(dto.getRelationshipStatus());
         c.setImpression(dto.getImpression());
-        c.setCurrentStage(0);
+        c.setCurrentStage(1);
+        c.setStatus("DRAFT");
         c.setTotalMessages(0);
         c.setVersion(1);
         c.setCreatedAt(new Date());

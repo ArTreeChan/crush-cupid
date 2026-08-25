@@ -19,6 +19,7 @@ export interface Crush {
   memorySweet?: string
   memoryInteraction?: string
   currentStage?: number
+  status?: string
   totalMessages?: number
   version?: number
   createdAt?: string
@@ -54,4 +55,37 @@ export interface Result<T> {
   code: number
   message: string
   data: T
+}
+
+export interface Source {
+  id: number
+  crushId: number
+  type: string
+  fileName?: string
+  content?: string
+  messageCount?: number
+  createdAt?: string
+}
+
+export interface Version {
+  id: number
+  crushId: number
+  version: number
+  reason?: string
+  snapshot?: string
+  createdAt?: string
+}
+
+export interface BuildResult {
+  crushId: number
+  version: number
+  status: string
+  memorySummary?: string
+  personaSummary?: string
+}
+
+export interface BuildEvent {
+  type: 'progress' | 'done' | 'error'
+  message?: string
+  result?: BuildResult
 }

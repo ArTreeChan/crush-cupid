@@ -58,6 +58,9 @@ public class Crush {
     /** 当前进展阶段 */
     private Integer currentStage;
 
+    /** 构建状态：DRAFT（仅基础信息） / READY（已生成 persona/memory） */
+    private String status;
+
     private Integer totalMessages;
 
     private Date lastChatDate;

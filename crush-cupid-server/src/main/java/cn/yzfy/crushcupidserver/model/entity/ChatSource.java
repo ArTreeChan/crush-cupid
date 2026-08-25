@@ -29,6 +29,9 @@ public class ChatSource {
 
     private String fileFormat;
 
+    /** 原材料内容（TEXT 类型直接存文本） */
+    private String content;
+
     private Integer messageCount;
 
     /** 原始分析结果（JSON 文本） */

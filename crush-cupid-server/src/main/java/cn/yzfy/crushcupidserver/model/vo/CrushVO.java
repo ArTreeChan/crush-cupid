@@ -43,6 +43,8 @@ public class CrushVO {
 
     private Integer currentStage;
 
+    private String status;
+
     private Integer totalMessages;
 
     private Date lastChatDate;

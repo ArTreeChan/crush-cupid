@@ -4,7 +4,7 @@
 -- ============================================
 -- 1. crush — 暗恋对象
 -- ============================================
-CREATE TABLE crush (
+CREATE TABLE IF NOT EXISTS crush (
     id                  BIGSERIAL PRIMARY KEY,
     name                VARCHAR(100) NOT NULL,
     slug                VARCHAR(100) UNIQUE NOT NULL,
@@ -29,6 +29,7 @@ CREATE TABLE crush (
     memory_interaction  TEXT,
 
     current_stage       SMALLINT DEFAULT 1,
+    status              VARCHAR(20) DEFAULT 'DRAFT',
     total_messages      INT DEFAULT 0,
     last_chat_date      TIMESTAMPTZ,
 
@@ -40,25 +41,26 @@ CREATE TABLE crush (
 -- ============================================
 -- 2. chat_source — 原材料
 -- ============================================
-CREATE TABLE chat_source (
+CREATE TABLE IF NOT EXISTS chat_source (
     id              BIGSERIAL PRIMARY KEY,
     crush_id        BIGINT NOT NULL REFERENCES crush(id) ON DELETE CASCADE,
     file_name       VARCHAR(255),
     file_path       VARCHAR(500),
     file_type       VARCHAR(50),
     file_format     VARCHAR(20),
+    content         TEXT,
     message_count   INT DEFAULT 0,
     raw_analysis    JSONB,
     parsed_at       TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_chat_source_crush ON chat_source(crush_id);
+CREATE INDEX IF NOT EXISTS idx_chat_source_crush ON chat_source(crush_id);
 
 -- ============================================
 -- 3. conversation — 对话记录
 -- ============================================
-CREATE TABLE conversation (
+CREATE TABLE IF NOT EXISTS conversation (
     id          BIGSERIAL PRIMARY KEY,
     crush_id    BIGINT NOT NULL REFERENCES crush(id) ON DELETE CASCADE,
     role        VARCHAR(20) NOT NULL,
@@ -66,12 +68,12 @@ CREATE TABLE conversation (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_conversation_crush ON conversation(crush_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_crush ON conversation(crush_id, created_at);
 
 -- ============================================
 -- 4. crush_version — 版本快照
 -- ============================================
-CREATE TABLE crush_version (
+CREATE TABLE IF NOT EXISTS crush_version (
     id          BIGSERIAL PRIMARY KEY,
     crush_id    BIGINT NOT NULL REFERENCES crush(id) ON DELETE CASCADE,
     version     INT NOT NULL,
@@ -80,4 +82,4 @@ CREATE TABLE crush_version (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_version_crush ON crush_version(crush_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_version_crush ON crush_version(crush_id, version DESC);

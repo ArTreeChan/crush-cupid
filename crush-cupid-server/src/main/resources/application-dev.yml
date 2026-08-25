@@ -2,7 +2,7 @@ server:
   port: 91
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/crushCupid
+    url: jdbc:postgresql://localhost:5432/crushCupid?stringtype=unspecified
     username: postgres
     password: 123456
     driver-class-name: org.postgresql.Driver

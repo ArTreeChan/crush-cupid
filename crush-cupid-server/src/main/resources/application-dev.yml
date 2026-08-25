@@ -16,6 +16,23 @@ spring:
         options:
           model: deepseek-chat
           temperature: 0.7
+    # Spring AI Alibaba DashScope：通义原生协议（ChatModel / AudioSpeechModel 等）。
+    # 由 spring-ai-alibaba-starter-dashscope 自动配置，ChatModelRegistry 启动时探测后注册为 [qwen-native] 供应商。
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:sk-your-dashscope-key}
+      chat:
+        options:
+          # 默认通义对话模型；多模态请求可由请求级 options 切到 qwen-vl-plus / qwen-omni-turbo
+          model: qwen-plus
+          temperature: 0.7
+      audio:
+        speech:
+          default-options:
+            # CosyVoice 声线：longxiaochun(女) / longshu(男) / longwan(女-温柔) 等
+            model: cosyvoice-v1
+            voice: longxiaochun
+            format: mp3
+            sample-rate: 22050
 
 crush:
   # LLM 多供应商配置：所有供应商统一走 OpenAI 兼容协议

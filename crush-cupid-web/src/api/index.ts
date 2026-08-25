@@ -1,8 +1,10 @@
 import http from './http'
 import type {
   BuildEvent,
+  ChatHistoryVO,
   Crush,
   CrushCreatePayload,
+  MultiChunk,
   Result,
   SkillCatalog,
   Source,
@@ -46,17 +48,68 @@ export async function getSkillPrompt(name: string): Promise<string> {
 }
 
 /**
- * 流式对话（SSE，POST）。后端每个 chunk 以 JSON 字符串编码在 data 行。
+ * 流式对话（SSE，POST）。后端每个 chunk 以 {index,content,done} JSON 编码在 data 行；
+ * 前端按 index 切气泡，支持 crush 一次连发多条短消息。
  */
 export async function streamChat(
   crushSlug: string,
   message: string,
-  onChunk: (text: string) => void,
-): Promise<string> {
-  const resp = await fetch('/api/chat', {
+  onChunk: (chunk: MultiChunk) => void,
+): Promise<void> {
+  await sseStream(
+    '/api/chat',
+    { crushSlug, message },
+    onChunk,
+  )
+}
+
+/**
+ * 主动消息（SSE，POST）。crush 不依赖用户输入而主动发起连发多条消息。
+ * contextHint 可选，给 crush 提供场景暗示（如「凌晨三点」「下雨天」）。
+ */
+export async function proactiveChat(
+  crushSlug: string,
+  contextHint: string,
+  onChunk: (chunk: MultiChunk) => void,
+): Promise<void> {
+  await sseStream(
+    '/api/chat/proactive',
+    { crushSlug, contextHint },
+    onChunk,
+  )
+}
+
+/**
+ * 语音合成：把 crush 文本回复送 CosyVoice 合成。后端用 Result<String> 返回 base64 mp3，
+ * 这里解码成 Blob 供 <audio> 播放。
+ * 注：axios baseURL 已是 /api，此处不要再带 /api 前缀，否则拼成 /api/api/...
+ */
+export async function synthesizeVoice(text: string, voice?: string): Promise<Blob> {
+  const base64 = await unwrap<string>(http.post('/chat/voice', { text, voice }))
+  // base64 -> bytes -> Blob
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+  return new Blob([bytes], { type: 'audio/mpeg' })
+}
+
+/**
+ * 加载某 crush 的历史对话（已落库 PG）。前端进入对话页时调用。
+ */
+export async function getChatHistory(crushSlug: string): Promise<ChatHistoryVO[]> {
+  return unwrap<ChatHistoryVO[]>(http.get('/chat/history', { params: { crushSlug } }))
+}
+
+/**
+ * SSE POST 通用消费器：解析 data 行为 MultiChunk 并回调。
+ */
+async function sseStream(
+  url: string,
+  body: Record<string, unknown>,
+  onChunk: (chunk: MultiChunk) => void,
+): Promise<void> {
+  const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ crushSlug, message }),
+    body: JSON.stringify(body),
   })
 
   const contentType = resp.headers.get('content-type') || ''
@@ -68,20 +121,16 @@ export async function streamChat(
   const reader = resp.body!.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
-  let full = ''
 
   const consume = (line: string) => {
     if (!line.startsWith('data:')) return
     const payload = line.slice(5).trim()
     if (!payload) return
-    let text: string
     try {
-      text = JSON.parse(payload) as string
+      onChunk(JSON.parse(payload) as MultiChunk)
     } catch {
-      text = payload
+      /* ignore malformed line */
     }
-    full += text
-    onChunk(text)
   }
 
   for (;;) {
@@ -92,9 +141,7 @@ export async function streamChat(
     buffer = lines.pop() ?? ''
     for (const line of lines) consume(line)
   }
-  // 流结束可能没有结尾换行，刷新剩余 buffer
   if (buffer.trim()) consume(buffer)
-  return full
 }
 
 export async function importSource(

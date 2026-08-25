@@ -7,8 +7,10 @@ import cn.yzfy.crushcupidserver.config.ChatClientProvider;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.dto.ChatMedia;
 import cn.yzfy.crushcupidserver.model.dto.ChatRequestDTO;
+import cn.yzfy.crushcupidserver.model.dto.ProactiveRequestDTO;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
 import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.model.vo.MultiChunkVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -20,9 +22,13 @@ import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
 
 import java.net.URI;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * @className CupidAgent
@@ -47,9 +53,10 @@ public class CupidAgent {
     private final MemoryAdvisor memoryAdvisor;
 
     /**
-     * 对话主入口，返回流式文本。
+     * 对话主入口，返回结构化多条消息流。LLM 用 {@value MessageSeparator#SEPARATOR} 分隔多条短消息，
+     * 本方法用 {@link MessageSeparator} 流式切分成 {@link MultiChunkVO}，前端按 index 切气泡。
      */
-    public Flux<String> chat(ChatRequestDTO dto) {
+    public Flux<MultiChunkVO> chat(ChatRequestDTO dto) {
         if (StrUtil.isBlank(dto.getCrushSlug())) {
             throw BizException.badRequest("缺少 crushSlug");
         }
@@ -69,17 +76,38 @@ public class CupidAgent {
             chatClientProvider.ensureMultimodal(dto.getProvider());
         }
 
+        ChatClient chatClient = chatClientProvider.get(dto.getProvider());
+        UserMessage userMessage = buildUserMessage(dto, hasMedia);
+        return streamMulti(chatClient, userMessage, crush);
+    }
+
+    /**
+     * 主动消息入口：crush 主动发起连发多条短消息，模拟真人微信「不聊天时主动找你」。
+     * 内部以元指令作为 user 消息触发模型主动发言，与 {@link #chat} 共用 persona/memory/分隔符协议。
+     */
+    public Flux<MultiChunkVO> proactive(ProactiveRequestDTO dto) {
+        if (StrUtil.isBlank(dto.getCrushSlug())) {
+            throw BizException.badRequest("缺少 crushSlug");
+        }
+        Crush crush = crushService.getBySlug(dto.getCrushSlug());
+        if (crush == null) {
+            throw BizException.notFound("未找到暗恋对象：" + dto.getCrushSlug());
+        }
+
+        ChatClient chatClient = chatClientProvider.get(dto.getProvider());
+        UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, dto.getContextHint()));
+        return streamMulti(chatClient, userMessage, crush);
+    }
+
+    /**
+     * 共用的流式调用 + 多条消息切分。绑定 persona/memory advisor 与会话记忆。
+     */
+    private Flux<MultiChunkVO> streamMulti(ChatClient chatClient, UserMessage userMessage, Crush crush) {
         String conversationId = "crush:" + crush.getId();
         String persona = buildPersona(crush);
         String memory = buildMemory(crush);
 
-        // 按 provider 路由 ChatClient
-        ChatClient chatClient = chatClientProvider.get(dto.getProvider());
-
-        // 构造（多模态）用户消息
-        UserMessage userMessage = buildUserMessage(dto, hasMedia);
-
-        return chatClient.prompt()
+        Flux<String> raw = chatClient.prompt()
                 .messages(userMessage)
                 .advisors(a -> a
                         .advisors(personaAdvisor, memoryAdvisor)
@@ -88,6 +116,33 @@ public class CupidAgent {
                         .param(MemoryAdvisor.CONTEXT_KEY, memory))
                 .stream()
                 .content();
+
+        // 用 Flux.defer 保证每次订阅都新建一个有状态的切分器
+        return Flux.defer(() -> {
+            MessageSeparator splitter = new MessageSeparator();
+            return raw
+                    .concatMapIterable(splitter::accept)
+                    .concatWith(Flux.fromStream(splitter.finish().stream()));
+        });
+    }
+
+    /**
+     * 构造主动消息触发 prompt：注入时间、关系阶段、用户暗示，要求连发多条。
+     */
+    private String buildProactivePrompt(Crush crush, String contextHint) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("【系统元指令】现在不是用户在和你说话，而是请你主动找用户聊天。\n");
+        sb.append("当前时间：").append(LocalDate.now()).append(" ")
+                .append(LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
+                .append("（请据此判断时段：早晨/午休/深夜等，调整说话的语气与内容）\n");
+        if (StrUtil.isNotBlank(contextHint)) {
+            sb.append("场景暗示：").append(contextHint).append("\n");
+        }
+        sb.append("根据你们的关系阶段、性格、记忆，自然地说点什么。\n");
+        sb.append("可以选的方向：分享日常 / 撒娇 / 关心 / 抱怨 / 求关注 / 借故搭话 / 突然想起一件事。\n");
+        sb.append("像真人微信一样连发多条短消息，用 ").append(MessageSeparator.SEPARATOR).append(" 分隔。\n");
+        sb.append("不要解释、不要带括号动作描述、不要说\"我是 AI\"。\n");
+        return sb.toString();
     }
 
     /**
@@ -164,7 +219,21 @@ public class CupidAgent {
         appendLayer(sb, "Layer 2 说话风格", c.getPersonaLayer2());
         appendLayer(sb, "Layer 3 情感模式", c.getPersonaLayer3());
         appendLayer(sb, "Layer 4 关系行为", c.getPersonaLayer4());
+        appendMultiMessageGuide(sb);
         return sb.toString();
+    }
+
+    /**
+     * 追加多条消息沟通风格指引：让模型像真人微信一样连发短消息，用 {@value MessageSeparator#SEPARATOR} 分隔。
+     */
+    private void appendMultiMessageGuide(StringBuilder sb) {
+        sb.append("## 沟通风格\n");
+        sb.append("像真人微信聊天一样连发多条短消息，每条都很短（几个字到一句话），不要写成一大段。\n");
+        sb.append("用 ").append(MessageSeparator.SEPARATOR)
+                .append(" 分隔不同条消息。例如：在吗？").append(MessageSeparator.SEPARATOR)
+                .append("刚看到一个东西超像你").append(MessageSeparator.SEPARATOR)
+                .append("哈哈哈哈你猜是啥\n");
+        sb.append("不要带括号动作描述、不要解释、不要说\"我是 AI\"。\n");
     }
 
     private String buildMemory(Crush c) {

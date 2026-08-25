@@ -4,13 +4,15 @@ import cn.yzfy.crushcupidserver.agent.advisor.SafetyAdvisor;
 import cn.yzfy.crushcupidserver.agent.tool.CrushTools;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * @className AiConfig
- * @description Agent 装配（Factory）。负责装配 memory advisor 与开启 LlmProperties 绑定。
+ * @description Agent 装配（Factory）。负责装配 memory advisor、ChatMemory（基于 PG）与开启 LlmProperties 绑定。
  * <p>
  * ChatClient 不再此处装配为单一 Bean，而是由 {@link ChatClientProvider} 按供应商代号动态构造，
  * 支持 DeepSeek / 通义千问 / OpenAI 多供应商路由与多模态扩展。
@@ -23,6 +25,19 @@ import org.springframework.context.annotation.Configuration;
 public class AiConfig {
 
     /**
+     * 基于 PG 的 ChatMemory：包装 {@link PgChatMemoryRepository}，窗口放大到 200 条
+     * （默认 20 条对暗恋模拟器太短，聊几天就被砍）。
+     * Spring AI autoconfigure 检测到本 Bean 后跳过默认 InMemory ChatMemory 注册。
+     */
+    @Bean
+    public ChatMemory chatMemory(ChatMemoryRepository repository) {
+        return MessageWindowChatMemory.builder()
+                .chatMemoryRepository(repository)
+                .maxMessages(200)
+                .build();
+    }
+
+    /**
      * 基于会话记忆的 advisor，注入所有 ChatClient。
      */
     @Bean
@@ -33,3 +48,4 @@ public class AiConfig {
     // SafetyAdvisor / CrushTools 已用 @Component / @Service 自注册，无需在此重复声明。
     // ChatModelRegistry / ChatClientProvider 也是 @Component，自动扫描注册。
 }
+

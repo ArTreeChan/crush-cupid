@@ -89,3 +89,21 @@ export interface BuildEvent {
   message?: string
   result?: BuildResult
 }
+
+/**
+ * 多条消息流式 chunk：后端按 index 切气泡，跳变即新气泡。
+ */
+export interface MultiChunk {
+  index: number
+  content: string
+  done: boolean
+}
+
+/**
+ * 对话历史条目（后端 GET /api/chat/history 返回）。
+ */
+export interface ChatHistoryVO {
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  createdAt: string
+}

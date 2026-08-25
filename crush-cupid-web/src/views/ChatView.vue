@@ -28,6 +28,16 @@
             >
               <span>📥</span>&nbsp;补充原材料
             </a-button>
+            <a-button
+              size="large"
+              block
+              class="side-card__btn side-card__btn--nudge"
+              :loading="streaming"
+              :disabled="!currentCrush || streaming"
+              @click="nudge"
+            >
+              <span>💌</span>&nbsp;等 ta 主动找我
+            </a-button>
             <div class="side-card__hint">
               <span>💡</span> 还没有暗恋对象？去「暗恋对象」页新建一个。
             </div>
@@ -35,7 +45,7 @@
         </a-col>
 
         <!-- 右侧：聊天区 -->
-        <a-col :span="18">
+        <a-col :span="18" class="chat-col">
           <div class="chat-card">
             <div class="chat-card__head">
               <div class="chat-card__title">
@@ -57,12 +67,36 @@
                 :class="['msg', m.role]"
               >
                 <div class="avatar">{{ m.role === 'user' ? '🧑' : '💗' }}</div>
-                <div class="bubble">{{ m.content }}</div>
+                <div class="bubble">
+                  <span>{{ m.content }}</span>
+                  <span v-if="streaming && i === streamingBubbleIdx" class="cursor">▋</span>
+                  <div
+                    v-if="m.role === 'assistant' && m.content && !streaming"
+                    class="bubble__voice"
+                  >
+                    <button
+                      class="voice-btn"
+                      :disabled="m.synthesizing"
+                      :title="m.synthesizing ? '合成中…' : (m.audioUrl ? '播放/暂停' : '听 ta 说')"
+                      @click="playVoice(m)"
+                    >
+                      <span v-if="m.synthesizing">⏳</span>
+                      <span v-else>🎤</span>
+                    </button>
+                    <audio
+                      v-if="m.audioUrl"
+                      class="bubble-audio"
+                      :src="m.audioUrl"
+                      controls
+                      preload="none"
+                    />
+                  </div>
+                </div>
               </div>
-              <div v-if="streaming" class="msg assistant">
+              <div v-if="streaming && streamingBubbleIdx < 0" class="msg assistant">
                 <div class="avatar">💗</div>
                 <div class="bubble">
-                  <span class="typing">{{ streamingText || '正在输入…' }}</span>
+                  <span class="typing">正在输入…</span>
                   <span class="cursor">▋</span>
                 </div>
               </div>
@@ -99,11 +133,13 @@
 
 <script setup lang="ts">
 /**
- * 对话页面：加载 crush 列表、维护消息历史、流式发送
+ * 对话页面：加载 crush 列表、维护消息历史、流式发送。
+ * 支持一次连发多条短消息（按 chunk.index 切气泡）、crush 主动发起对话、
+ * 以及把 crush 的文本回复一键转 CosyVoice 语音播放。
  */
-import { computed, nextTick, onMounted, ref } from 'vue'
-import { listCrushes, streamChat } from '@/api'
-import type { Crush } from '@/types'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { getChatHistory, listCrushes, proactiveChat, streamChat, synthesizeVoice } from '@/api'
+import type { Crush, MultiChunk } from '@/types'
 import SourceImportModal from '@/components/SourceImportModal.vue'
 import PageContainer from '@/components/PageContainer.vue'
 
@@ -111,6 +147,10 @@ import PageContainer from '@/components/PageContainer.vue'
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /** 语音 URL（合成后生成，便于气泡内 <audio> 播放）；无则未合成 */
+  audioUrl?: string
+  /** 是否正在合成语音 */
+  synthesizing?: boolean
 }
 
 const crushes = ref<Crush[]>([])
@@ -119,8 +159,10 @@ const currentSlug = ref<string>()
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const streaming = ref(false)
-const streamingText = ref('')
 const msgBox = ref<HTMLElement>()
+
+/** 当前正在流式追加的气泡在 messages 中的索引（用于显示光标）；-1 表示无 */
+const streamingBubbleIdx = ref(-1)
 
 /** crush 下拉选项 */
 const crushOptions = computed(() =>
@@ -157,6 +199,57 @@ async function scrollToBottom() {
   }
 }
 
+/** 加载某 crush 的历史对话（已落库 PG） */
+async function loadHistory(slug: string) {
+  if (!slug) {
+    messages.value = []
+    return
+  }
+  try {
+    const rows = await getChatHistory(slug)
+    // 过滤掉 system/tool 消息——前端只渲染 user/assistant 气泡
+    messages.value = rows
+        .filter((r) => r.role === 'user' || r.role === 'assistant')
+        .map((r) => ({ role: r.role, content: r.content }))
+    await scrollToBottom()
+  } catch {
+    messages.value = []
+  }
+}
+
+// 切换 crush 时重新加载该 crush 的历史
+watch(currentSlug, (slug) => {
+  if (slug) loadHistory(slug)
+})
+
+/**
+ * 本轮 assistant 多条气泡累积器：按 chunk.index 把 content 追加到对应气泡，
+ * index 跳变即开新气泡；同时维护当前 streaming 气泡索引以显示光标。
+ */
+class MultiBubbleAccumulator {
+  /** chunk.index -> messages 数组位置 */
+  private map = new Map<number, number>()
+
+  push(chunk: MultiChunk) {
+    if (chunk.done) return
+    let pos = this.map.get(chunk.index)
+    if (pos === undefined) {
+      messages.value.push({ role: 'assistant', content: '' })
+      pos = messages.value.length - 1
+      this.map.set(chunk.index, pos)
+    }
+    if (chunk.content) {
+      messages.value[pos].content += chunk.content
+    }
+    streamingBubbleIdx.value = pos
+  }
+
+  reset() {
+    this.map.clear()
+    streamingBubbleIdx.value = -1
+  }
+}
+
 /** 发送消息并接收流式回复 */
 async function send() {
   const text = input.value.trim()
@@ -165,22 +258,71 @@ async function send() {
   messages.value.push({ role: 'user', content: text })
   input.value = ''
   streaming.value = true
-  streamingText.value = ''
+  const acc = new MultiBubbleAccumulator()
   await scrollToBottom()
 
   try {
     await streamChat(currentSlug.value, text, (chunk) => {
-      streamingText.value += chunk
+      acc.push(chunk)
       scrollToBottom()
     })
-    messages.value.push({ role: 'assistant', content: streamingText.value })
   } catch (e) {
     const msg = e instanceof Error ? e.message : '发送失败'
     messages.value.push({ role: 'assistant', content: `[错误] ${msg}` })
   } finally {
+    acc.reset()
     streaming.value = false
-    streamingText.value = ''
     await scrollToBottom()
+  }
+}
+
+/** 让 crush 主动找你（一次连发多条） */
+async function nudge() {
+  if (!currentSlug.value || streaming.value) return
+  streaming.value = true
+  const acc = new MultiBubbleAccumulator()
+  await scrollToBottom()
+
+  try {
+    await proactiveChat(currentSlug.value, '', (chunk) => {
+      acc.push(chunk)
+      scrollToBottom()
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '主动消息失败'
+    messages.value.push({ role: 'assistant', content: `[错误] ${msg}` })
+  } finally {
+    acc.reset()
+    streaming.value = false
+    await scrollToBottom()
+  }
+}
+
+/** 把指定 assistant 气泡的文本转 CosyVoice 语音并就地播放 */
+async function playVoice(msg: ChatMessage) {
+  if (msg.role !== 'assistant' || !msg.content || msg.synthesizing) return
+  // 已合成过则切换播放/暂停
+  if (msg.audioUrl) {
+    const audios = document.querySelectorAll<HTMLAudioElement>('audio.bubble-audio')
+    audios.forEach((a) => {
+      if (a.src === msg.audioUrl) {
+        if (a.paused) a.play()
+        else a.pause()
+    }})
+    return
+  }
+  msg.synthesizing = true
+  try {
+    const blob = await synthesizeVoice(msg.content)
+    msg.audioUrl = URL.createObjectURL(blob)
+    await nextTick()
+    const audios = document.querySelectorAll<HTMLAudioElement>('audio.bubble-audio')
+    const target = Array.from(audios).find((a) => a.src === msg.audioUrl)
+    target?.play()
+  } catch (e) {
+    msg.audioUrl = undefined
+  } finally {
+    msg.synthesizing = false
   }
 }
 
@@ -193,6 +335,11 @@ onMounted(loadCrushes)
 }
 
 .chat-row {
+  height: 100%;
+}
+
+/* ant-col 默认无高度，需显式 100% 才能让 .chat-card 的 height:100% 生效，否则 .messages 不滚动 */
+.chat-col {
   height: 100%;
 }
 
@@ -215,6 +362,16 @@ onMounted(loadCrushes)
 .side-card__btn {
   margin-top: 12px;
   border-radius: var(--cupid-radius-sm) !important;
+}
+
+.side-card__btn--nudge {
+  border: 1px dashed var(--cupid-primary) !important;
+  color: var(--cupid-primary) !important;
+  background: var(--cupid-gradient-soft) !important;
+}
+
+.side-card__btn--nudge:hover {
+  background: #fff !important;
 }
 
 .side-card__hint {
@@ -293,28 +450,61 @@ onMounted(loadCrushes)
 }
 
 .bubble {
-  max-width: 70%;
-  padding: 10px 14px;
-  border-radius: 16px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 14px;
-  line-height: 1.6;
-}
+    max-width: 70%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 14px;
+    line-height: 1.6;
+  }
 
-.msg.user .bubble {
-  background: var(--cupid-gradient);
-  color: #fff;
-  border-bottom-right-radius: 4px;
-  box-shadow: 0 4px 12px rgba(255, 90, 122, 0.25);
-}
+  .msg.user .bubble {
+    background: var(--cupid-gradient);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+    box-shadow: 0 4px 12px rgba(255, 90, 122, 0.25);
+  }
 
-.msg.assistant .bubble {
-  background: #fff;
-  color: var(--cupid-text);
-  border: 1px solid var(--cupid-border);
-  border-bottom-left-radius: 4px;
-}
+  .msg.assistant .bubble {
+    background: #fff;
+    color: var(--cupid-text);
+    border: 1px solid var(--cupid-border);
+    border-bottom-left-radius: 4px;
+  }
+
+  .bubble__voice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    border-top: 1px dashed var(--cupid-border);
+    padding-top: 8px;
+  }
+
+  .voice-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 50%;
+    transition: background 0.15s;
+  }
+
+  .voice-btn:hover:not(:disabled) {
+    background: rgba(255, 105, 180, 0.12);
+  }
+
+  .voice-btn:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
+
+  .bubble-audio {
+    height: 32px;
+    max-width: 240px;
+  }
 
 /* 打字光标动画 */
 .cursor {

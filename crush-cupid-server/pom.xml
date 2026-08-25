@@ -34,10 +34,24 @@
     <dependencyManagement>
         <dependencies>
 
+            <!--
+              Spring AI 对齐 1.1.2，与 Alibaba 1.1.2.3 一致。
+              项目用到的 ChatClient / UserMessage / Media / OpenAiChatModel 等 API 均自 1.1 GA 起就存在，
+              降级安全；1.1.2 → 1.1.8 的 patch 差异不影响现有调用点。
+            -->
             <dependency>
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
-                <version>1.1.8</version>
+                <version>1.1.2</version>
+                <scope>import</scope>
+                <type>pom</type>
+            </dependency>
+
+            <!-- Spring AI Alibaba BOM：统一管理 Alibaba 自家模块版本 -->
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-bom</artifactId>
+                <version>1.1.2.3</version>
                 <scope>import</scope>
                 <type>pom</type>
             </dependency>
@@ -94,6 +108,18 @@
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
+        <!--
+          Spring AI Alibaba DashScope：通义原生协议（ChatModel / ImageModel / AudioSpeechModel 等）。
+          与上方 spring-ai-starter-model-openai 共存：前者用于 deepseek/openai（OpenAI 兼容），
+          本依赖用于 qwen / qwen-vl / qwen-omni 等通义全家桶，且原生支持多模态输出（TTS/文生图）。
+          注：Alibaba BOM 1.1.2.3 未管理本 artifact，需显式指定版本。
+        -->
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+            <version>1.1.2.3</version>
         </dependency>
 
         <!-- Hutool 工具类（判空等） -->

@@ -2,6 +2,7 @@ package cn.yzfy.crushcupidserver.config;
 
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.exception.BizException;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import jakarta.annotation.PostConstruct;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +11,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -34,6 +36,15 @@ import java.util.Map;
 public class ChatModelRegistry {
 
     private final LlmProperties llmProperties;
+
+    /**
+     * Alibaba DashScope 原生 ChatModel（由 spring-ai-alibaba-starter-dashscope 自动配置注册）。
+     * 用 ObjectProvider 容错：未配 DASHSCOPE_API_KEY 时不阻塞启动，仅 [qwen-native] 不可用。
+     */
+    private final ObjectProvider<DashScopeChatModel> dashscopeChatModelProvider;
+
+    /** [qwen-native] 供应商代号：走 Alibaba DashScope 原生协议，拿通义全家桶 */
+    public static final String QWEN_NATIVE = "qwen-native";
 
     /** 供应商代号 -> ChatModel 实例 */
     @Getter
@@ -68,6 +79,20 @@ public class ChatModelRegistry {
         if (!models.containsKey(llmProperties.getDefaultProvider())) {
             throw new IllegalStateException("默认 LLM 供应商 [" + llmProperties.getDefaultProvider()
                     + "] 未注册成功，请检查 crush.ai.providers 配置");
+        }
+
+        // 探测 Alibaba DashScope 原生 ChatModel Bean，注册为 [qwen-native] 供应商
+        DashScopeChatModel dashscope = dashscopeChatModelProvider.getIfAvailable();
+        if (dashscope != null) {
+            models.put(QWEN_NATIVE, dashscope);
+            LlmProperties.ProviderConfig nativeCfg = new LlmProperties.ProviderConfig();
+            nativeCfg.setBaseUrl("dashscope-native");
+            nativeCfg.setModel("(alibaba-managed: qwen-plus/qwen-vl-plus/qwen-omni-turbo)");
+            nativeCfg.setMultimodal(true);
+            configs.put(QWEN_NATIVE, nativeCfg);
+            log.info("已注册 Alibaba DashScope 原生 ChatModel -> [{}]（通义全家桶 + 多模态）", QWEN_NATIVE);
+        } else {
+            log.warn("未探测到 DashScopeChatModel Bean，[qwen-native] 不可用（需配置 spring.ai.dashscope.api-key）");
         }
     }
 

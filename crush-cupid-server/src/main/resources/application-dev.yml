@@ -7,6 +7,8 @@ spring:
     password: 123456
     driver-class-name: org.postgresql.Driver
   ai:
+    # Spring AI 自动配置仍保留，但实际由 crush.ai 多供应商注册中心接管路由；
+    # 此处 base-url/api-key 仅作为兜底默认（ChatModelRegistry 未命中时由 Spring 注入的 ChatModel 使用）。
     openai:
       api-key: ${DEEPSEEK_API_KEY:sk-your-deepseek-key}
       base-url: https://api.deepseek.com
@@ -16,6 +18,39 @@ spring:
           temperature: 0.7
 
 crush:
+  # LLM 多供应商配置：所有供应商统一走 OpenAI 兼容协议
+  # DeepSeek / 通义千问 DashScope 兼容模式 / OpenAI 均可在此注册
+  ai:
+    default-provider: deepseek
+    providers:
+      # DeepSeek（文本对话默认）
+      deepseek:
+        base-url: https://api.deepseek.com
+        api-key: ${DEEPSEEK_API_KEY:sk-your-deepseek-key}
+        model: deepseek-chat
+        temperature: 0.7
+        multimodal: false
+      # 通义千问 DashScope（OpenAI 兼容模式）— 文本
+      qwen:
+        base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        api-key: ${DASHSCOPE_API_KEY:sk-your-dashscope-key}
+        model: qwen-plus
+        temperature: 0.7
+        multimodal: false
+      # 通义千问 多模态视觉模型（图像理解）
+      qwen-vl:
+        base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        api-key: ${DASHSCOPE_API_KEY:sk-your-dashscope-key}
+        model: qwen-vl-plus
+        temperature: 0.7
+        multimodal: true
+      # OpenAI 官方（多模态）
+      openai:
+        base-url: https://api.openai.com
+        api-key: ${OPENAI_API_KEY:sk-your-openai-key}
+        model: gpt-4o
+        temperature: 0.7
+        multimodal: true
   skill:
     # GitHub raw 基础地址（远程 skill 调用入口）
     base-url: https://raw.githubusercontent.com/xiaoheizi8/crush-skills/refs/heads/main/SKILL.md

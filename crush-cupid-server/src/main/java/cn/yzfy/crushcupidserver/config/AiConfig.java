@@ -2,36 +2,34 @@ package cn.yzfy.crushcupidserver.config;
 
 import cn.yzfy.crushcupidserver.agent.advisor.SafetyAdvisor;
 import cn.yzfy.crushcupidserver.agent.tool.CrushTools;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Agent 装配（Factory）：组装 ChatClient 的默认 advisor 与工具。
+ * @className AiConfig
+ * @description Agent 装配（Factory）。负责装配 memory advisor 与开启 LlmProperties 绑定。
+ * <p>
+ * ChatClient 不再此处装配为单一 Bean，而是由 {@link ChatClientProvider} 按供应商代号动态构造，
+ * 支持 DeepSeek / 通义千问 / OpenAI 多供应商路由与多模态扩展。
+ * @author 一朝风月
+ * @code configuration
+ * @createTime 2026-08-26
  */
 @Configuration
+@EnableConfigurationProperties(LlmProperties.class)
 public class AiConfig {
 
+    /**
+     * 基于会话记忆的 advisor，注入所有 ChatClient。
+     */
     @Bean
     public MessageChatMemoryAdvisor messageChatMemoryAdvisor(ChatMemory chatMemory) {
         return MessageChatMemoryAdvisor.builder(chatMemory).build();
     }
 
-    @Bean
-    public ChatClient chatClient(ChatClient.Builder builder,
-                                 MessageChatMemoryAdvisor memoryAdvisor,
-                                 SafetyAdvisor safetyAdvisor,
-                                 CrushTools crushTools) {
-        ToolCallbackProvider toolCallbackProvider = MethodToolCallbackProvider.builder()
-                .toolObjects(crushTools)
-                .build();
-        return builder
-                .defaultAdvisors(memoryAdvisor, safetyAdvisor)
-                .defaultToolCallbacks(toolCallbackProvider)
-                .build();
-    }
+    // SafetyAdvisor / CrushTools 已用 @Component / @Service 自注册，无需在此重复声明。
+    // ChatModelRegistry / ChatClientProvider 也是 @Component，自动扫描注册。
 }

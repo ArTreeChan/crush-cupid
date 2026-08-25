@@ -1,6 +1,7 @@
 package cn.yzfy.crushcupidserver.agent;
 
 import cn.hutool.core.util.StrUtil;
+import cn.yzfy.crushcupidserver.config.ChatModelRegistry;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.entity.ChatSource;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
@@ -68,7 +69,7 @@ public class CrushBuildService {
     private final ChatSourceService chatSourceService;
     private final CrushVersionService crushVersionService;
     private final SkillCatalogService skillCatalogService;
-    private final ChatModel chatModel;
+    private final ChatModelRegistry chatModelRegistry;
     private final ObjectMapper objectMapper;
 
     public BuildResultVO build(Long crushId, Consumer<String> onProgress) {
@@ -134,6 +135,8 @@ public class CrushBuildService {
                 .replace("{{memory}}", memoryTemplate);
         String user = buildUserPrompt(crush, rawMaterial);
 
+        // 构建走默认供应商（如 deepseek，文本任务无需多模态）
+        ChatModel chatModel = chatModelRegistry.getDefault();
         var response = chatModel.call(new Prompt(List.of(new SystemMessage(system), new UserMessage(user))));
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
             throw new BizException("模型返回为空");

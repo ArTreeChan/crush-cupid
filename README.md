@@ -30,11 +30,12 @@
 | 多模态对话 | 支持图像 / 音频输入（qwen-vl / gpt-4o 等），自动校验供应商多模态能力 |
 | 多条消息 | LLM 用 `\|\|\|` 分隔连发短消息，像真人微信一样「在吗？」「哈哈哈」「你猜」 |
 | 主动消息 | crush 不依赖用户输入主动连发（「等 ta 主动找我」按钮），可带场景暗示 |
-| 语音合成 | 接入 Spring AI Alibaba CosyVoice，每条回复可一键转 mp3 播放 |
+| 语音合成 | 接入 CosyVoice v3-flash（WebSocket 直联合成），回复可一键转 mp3，支持声音设计生成专属声线 |
 | Persona 建模 | 5 层人格模型（硬规则 → 身份 → 说话风格 → 情感模式 → 关系行为） |
 | 对话记忆入库 | 对话历史落库 PostgreSQL（自封装 `PgChatMemoryRepository`），跨刷新/重启续上下文 |
 | 历史加载 | 进入对话页自动拉取该 crush 的历史消息渲染气泡 |
-| 工具调用 | 封装 `@Tool`（列出暗恋对象 / 查画像 / 拉远端 prompt） |
+| OCR 识别 | 对接阿里云百炼「通用 OCR」MCP（streamableHttp），聊天截图 / 照片可识别文字，未配置自动降级 |
+| 工具调用 | 封装 `@Tool`（列出暗恋对象 / 查画像 / 拉远端 prompt / OCR 识别） |
 | Advisor 封装 | 安全边界 / Persona / Memory 三个自定义 advisor 注入系统提示 |
 
 ---
@@ -56,7 +57,8 @@
                     │                   ├── MessageSeparator (多条切分)     │
                     │                   └── PgChatMemoryRepository          │
                     │                         │ (基于 conversation 表)     │
-                    │  VoiceService ── DashScopeAudioSpeechModel ──▶ mp3   │
+                    │  VoiceService ── DashScopeAudioSpeechApi(WebSocket) ──▶ mp3 │
+                    │  OcrService ── McpSyncClient ──▶ 百炼通用OCR          │
                     │  skill/ ── GitHubRawSkillClient ──▶ GitHub raw       │
                     │        └─ CachingSkillResourceClient(TTL)             │
                     │  PostgreSQL  ◀── MyBatis-Plus                        │
@@ -90,6 +92,7 @@ Vue 3 + Ant Design Vue · Vite
 # 1. 后端（依赖：JDK17 + Maven + PostgreSQL）
 export DEEPSEEK_API_KEY=sk-xxx        # 默认供应商 DeepSeek
 export DASHSCOPE_API_KEY=sk-xxx       # 通义千问 + 语音合成（可选，缺省跳过该供应商）
+export OCR_MCP_URL=https://dashscope.aliyuncs.com/api/v1/mcps/mcp-xxx/mcp  # 百炼 OCR（可选）
 cd crush-cupid-server
 mvn -DskipTests spring-boot:run        # 启动在 http://localhost:91
 
@@ -120,7 +123,18 @@ spring:
           model: qwen-plus
       audio:
         speech:
-          voice: longxiaochun          # CosyVoice 女声
+          default-options:
+            model: cosyvoice-v3-flash   # 模型名
+            voice: longyingling_v3      # 音色（v3 系列用 _v3 音色）
+    # 阿里云百炼 MCP：通用 OCR 文字识别（initialized=false 惰性连接，失败仅降级 OCR）
+    mcp:
+      client:
+        type: sync
+        initialized: false
+        streamable-http:
+          connections:
+            ocr:
+              url: ${OCR_MCP_URL}
 
 # 多供应商路由（自封装，按 provider 字段切换）
 crush:
@@ -162,6 +176,7 @@ crush:
 | POST | `/api/chat` | 对话（SSE 流式，`{crushSlug, message, provider?, media?}`） |
 | POST | `/api/chat/proactive` | 主动消息（SSE 流式，`{crushSlug, provider?, contextHint?}`） |
 | POST | `/api/chat/voice` | 语音合成（`{text, voice?}` → `Result<String>` base64 mp3） |
+| POST | `/api/chat/voice/design` | 声音设计（`{voicePrompt, previewText?}` → 专属 voice_id） |
 | GET | `/api/chat/history?crushSlug=xxx` | 加载历史对话（`Result<List<ChatHistoryVO>>`） |
 | GET | `/api/crush` | 列出暗恋对象 |
 | POST | `/api/crush` | 新建暗恋对象 |
@@ -197,15 +212,16 @@ crush:
 ```
 crush-cupid-server/                      crush-cupid-web/
 ├── src/main/java/cn/yzfy/crushcupidserver/
-│   ├── agent/        # CupidAgent 门面 + Tools + Advisors + MessageSeparator + VoiceService
+│   ├── agent/        # CupidAgent 门面 + Tools + Advisors + MessageSeparator + VoiceService + OcrService
 │   ├── skill/        # GitHub 远端 Skill 调用（Adapter + Decorator）
 │   ├── model/        # entity / dto / vo / mapper / service / converter
 │   ├── controller/   # REST + SSE 接口
-│   ├── config/       # AiConfig / LlmProperties / ChatModelRegistry / ChatClientProvider / PgChatMemoryRepository
+│   ├── config/       # AiConfig / LlmProperties / ChatModelRegistry / ChatClientProvider / McpAuthConfig / OcrProperties / PgChatMemoryRepository
 │   ├── common/       # 统一返回结构 Result<T>
 │   └── exception/    # 全局异常处理
 └── src/main/resources/
-    └── application.yml
+    ├── application.yml
+    └── mcp-servers.json   # 百炼 OCR MCP 参考模板（实际连接走 spring.ai.mcp.client.*）
 ```
 
 ---
@@ -216,6 +232,8 @@ crush-cupid-server/                      crush-cupid-web/
 - **本机到 GitHub raw 仅 IPv6 可达**：`spring-boot-maven-plugin` 里已配 `-Djava.net.preferIPv6Addresses=true`，用别的启动方式时需自行带上。
 - **Spring AI 版本对齐**：项目用 Spring AI 1.1.2（而非最新 1.1.8），是为了对齐 Spring AI Alibaba 1.1.2.3 的硬依赖；所用 API 均为 1.1 GA 起即有，降级安全。
 - **多模态 Media 不入库**：`PgChatMemoryRepository` 只存 `message.getText()` 纯文本，图像/音频 Media 下次对话需重发；历史记忆主要靠文本上下文。
+- **OCR 可降级**：未配置 `OCR_MCP_URL` / MCP 连接时，`OcrService.available()` 返回 false，文件上传自动回退默认文本解析，不影响主流程。
+- **CosyVoice v3 音色**：v3 系列（v3-flash / v3.5）配 `_v3` 系统音色（如 `longyingling_v3`），或用 `/api/chat/voice/design` 以文字描述生成专属 voice_id；v2 仅支持上传音频复刻。 参考https://www.alibabacloud.com/help/zh/model-studio/cosyvoice-voice-list?spm=a2c63.p38356.help-menu-2400256.d_0_3_4_5_1.35c36bdfdJop3g
 
 ---
 

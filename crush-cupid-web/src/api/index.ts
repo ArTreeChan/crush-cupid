@@ -99,6 +99,22 @@ export async function getChatHistory(crushSlug: string): Promise<ChatHistoryVO[]
 }
 
 /**
+ * 主动消息推送监听（SSE，GET）。为当前查看的 crush 建立常驻连接，
+ * 后端调度器生成新的主动消息后通过该连接推送（事件名 proactive），
+ * 前端收到后应重新拉取该 crush 的历史以渲染新气泡。
+ *
+ * @returns 关闭函数（切换 crush / 页面卸载时调用）
+ */
+export function listenProactive(crushSlug: string, onMessage: (text: string) => void): () => void {
+  const es = new EventSource(`/api/push/listen?crushSlug=${encodeURIComponent(crushSlug)}`)
+  es.addEventListener('proactive', (e) => {
+    onMessage((e as MessageEvent).data)
+  })
+  // EventSource 断线会自动重连，这里无需额外处理
+  return () => es.close()
+}
+
+/**
  * SSE POST 通用消费器：解析 data 行为 MultiChunk 并回调。
  */
 async function sseStream(

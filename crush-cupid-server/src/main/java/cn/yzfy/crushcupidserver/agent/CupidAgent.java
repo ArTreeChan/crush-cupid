@@ -157,11 +157,48 @@ public class CupidAgent {
     }
 
     /**
+     * 静默生成主动消息并落库（供定时调度器使用）。
+     * <p>
+     * 复用 {@link #proactive(ProactiveRequestDTO)} 的 persona/memory/分隔符协议，但改用
+     * 非流式 {@code .call()}：MessageChatMemoryAdvisor 会在 after 阶段把生成的 assistant
+     * 消息写入 conversation 表，前端无需长连接即可于下次加载历史时看到。
+     *
+     * @param crush       目标暗恋对象
+     * @param contextHint 场景暗示（可选，如「下雨天」「你刚发了条朋友圈」）
+     * @return LLM 生成的原始回复文本（含 {@link MessageSeparator#SEPARATOR} 分隔的多条短消息）
+     */
+    public String proactiveSilent(Crush crush, String contextHint) {
+        String conversationId = "crush:" + crush.getId();
+        UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, contextHint, true));
+        ChatClient chatClient = chatClientProvider.getDefault();
+        return chatClient.prompt()
+                .messages(userMessage)
+                .advisors(a -> a
+                        .advisors(personaAdvisor, memoryAdvisor)
+                        .param(ChatMemory.CONVERSATION_ID, conversationId)
+                        .param(PersonaAdvisor.CONTEXT_KEY, buildPersona(crush))
+                        .param(MemoryAdvisor.CONTEXT_KEY, buildMemory(crush)))
+                .call()
+                .content();
+    }
+
+    /**
      * 构造主动消息触发 prompt：注入时间、关系阶段、用户暗示，要求连发多条。
      */
     private String buildProactivePrompt(Crush crush, String contextHint) {
+        return buildProactivePrompt(crush, contextHint, false);
+    }
+
+    /**
+     * 构造主动消息触发 prompt。silent=true 时额外告知此刻无需用户在场（后台守护触发），
+     * 让 LLM 说真实自然的话而不显得「被点醒」。
+     */
+    private String buildProactivePrompt(Crush crush, String contextHint, boolean silent) {
         StringBuilder sb = new StringBuilder();
         sb.append("【系统元指令】现在不是用户在和你说话，而是请你主动找用户聊天。\n");
+        if (silent) {
+            sb.append("此刻是自然生活的某个时刻，你想起 ta 了，主动开口说点什么。\n");
+        }
         sb.append("当前时间：").append(LocalDate.now()).append(" ")
                 .append(LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
                 .append("（请据此判断时段：早晨/午休/深夜等，调整说话的语气与内容）\n");
@@ -237,7 +274,7 @@ public class CupidAgent {
         };
     }
 
-    private String buildPersona(Crush c) {
+    public String buildPersona(Crush c) {
         StringBuilder sb = new StringBuilder();
         sb.append("你是").append(c.getName()).append("，不是 AI 助手。用 ta 的方式说话、用 ta 的逻辑思考。\n");
         if (notBlank(c.getMbti())) sb.append("MBTI：").append(c.getMbti()).append("\n");
@@ -266,7 +303,7 @@ public class CupidAgent {
         sb.append("不要带括号动作描述、不要解释、不要说\"我是 AI\"。\n");
     }
 
-    private String buildMemory(Crush c) {
+    public String buildMemory(Crush c) {
         StringBuilder sb = new StringBuilder();
         boolean any = false;
         if (notBlank(c.getMemoryOverview())) { sb.append("## 关系记忆\n").append(c.getMemoryOverview()).append("\n"); any = true; }

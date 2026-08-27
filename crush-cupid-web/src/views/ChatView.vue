@@ -137,8 +137,15 @@
  * 支持一次连发多条短消息（按 chunk.index 切气泡）、crush 主动发起对话、
  * 以及把 crush 的文本回复一键转 CosyVoice 语音播放。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { getChatHistory, listCrushes, proactiveChat, streamChat, synthesizeVoice } from '@/api'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  getChatHistory,
+  listCrushes,
+  listenProactive,
+  proactiveChat,
+  streamChat,
+  synthesizeVoice,
+} from '@/api'
 import type { Crush, MultiChunk } from '@/types'
 import SourceImportModal from '@/components/SourceImportModal.vue'
 import PageContainer from '@/components/PageContainer.vue'
@@ -162,6 +169,8 @@ const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const streaming = ref(false)
 const msgBox = ref<HTMLElement>()
+/** 当前 crush 的主动消息监听关闭函数（切换 crush 时先关旧的） */
+let closePush: (() => void) | null = null
 
 /** 当前正在流式追加的气泡在 messages 中的索引（用于显示光标）；-1 表示无 */
 const streamingBubbleIdx = ref(-1)
@@ -232,11 +241,29 @@ async function loadHistory(slug: string) {
   }
 }
 
-// 切换 crush 时停止当前连播，并重新加载该 crush 的历史
+// 切换 crush 时停止当前连播，并重新加载该 crush 的历史 + 建立主动推送监听
 watch(currentSlug, (slug) => {
   stopPlayback()
-  if (slug) loadHistory(slug)
+  if (closePush) {
+    closePush()
+    closePush = null
+  }
+  if (slug) {
+    loadHistory(slug)
+    closePush = listenProactive(slug, onProactivePush)
+  }
 })
+
+/**
+ * 收到后端主动消息推送：重新拉取历史渲染新气泡，并给一个轻微提示音。
+ * 若用户当前正看其它 crush 的历史，不强制切走，仅做轻提示。
+ */
+function onProactivePush(text: string) {
+  if (currentSlug.value) {
+    void loadHistory(currentSlug.value)
+  }
+  playNudgeTone()
+}
 
 /**
  * 本轮 assistant 多条气泡累积器：按 chunk.index 把 content 追加到对应气泡，
@@ -382,7 +409,35 @@ async function playVoice(msg: ChatMessage, index: number) {
   void audios[0].play().catch(() => {})
 }
 
+/** 收到主动消息时的轻微提示音（Web Audio，无需音频文件） */
+function playNudgeTone() {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext
+    const ctx = new Ctx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 880
+    gain.gain.value = 0.04
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.15)
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35)
+    osc.stop(ctx.currentTime + 0.35)
+    osc.onended = () => ctx.close()
+  } catch {
+    /* 忽略音频不可用 */
+  }
+}
+
 onMounted(loadCrushes)
+onUnmounted(() => {
+  if (closePush) {
+    closePush()
+    closePush = null
+  }
+})
 </script>
 
 <style scoped>

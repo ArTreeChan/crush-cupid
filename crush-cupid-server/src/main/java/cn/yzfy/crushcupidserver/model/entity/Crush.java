@@ -69,6 +69,21 @@ public class Crush  implements Serializable {
     /** CosyVoice 专属音色 voice_id（由 /api/chat/voice/design 声音设计产生） */
     private String voiceId;
 
+    /** 是否允许主动发消息 */
+    private Boolean proactiveEnabled;
+
+    /** 下次主动发言窗口开启时间（LLM 决策写入） */
+    private Date nextProactiveAt;
+
+    /** 上次主动发言时间（用于冷却） */
+    private Date lastProactiveAt;
+
+    /** 主动计数归属日（用于每日上限） */
+    private Date proactiveDate;
+
+    /** 当日主动发言次数 */
+    private Integer proactiveCount;
+
     private Integer version;
 
     private Date createdAt;

@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS crush (
     last_chat_date      TIMESTAMPTZ,
     voice_id            VARCHAR(100),           -- CosyVoice 专属音色 voice_id（声音设计/复刻产生）
 
+    -- ===== 主动消息调度（LLM 决策 + 定时探测）=====
+    proactive_enabled   BOOLEAN DEFAULT TRUE,  -- 是否允许 crush 主动发消息
+    next_proactive_at   TIMESTAMPTZ,           -- 下次主动发言窗口开启时间（LLM 决策写入）
+    last_proactive_at   TIMESTAMPTZ,           -- 上次主动发言时间（用于冷却）
+    proactive_date      DATE,                  -- 主动计数归属日（用于每日上限）
+    proactive_count     INT DEFAULT 0,         -- 当日主动发言次数
+
     version             INT DEFAULT 1,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     updated_at          TIMESTAMPTZ DEFAULT NOW()

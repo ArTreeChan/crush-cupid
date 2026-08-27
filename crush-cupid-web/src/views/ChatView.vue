@@ -78,7 +78,7 @@
                       class="voice-btn"
                       :disabled="m.synthesizing"
                       :title="m.synthesizing ? '合成中…' : (m.audioUrl ? '播放/暂停' : '听 ta 说')"
-                      @click="playVoice(m)"
+                      @click="playVoice(m, i)"
                     >
                       <span v-if="m.synthesizing">⏳</span>
                       <span v-else>🎤</span>
@@ -151,6 +151,8 @@ interface ChatMessage {
   audioUrl?: string
   /** 是否正在合成语音 */
   synthesizing?: boolean
+  /** 合成中的 promise，用于并发去重与等待 */
+  synthPromise?: Promise<void>
 }
 
 const crushes = ref<Crush[]>([])
@@ -199,6 +201,9 @@ async function scrollToBottom() {
   }
 }
 
+/** 历史消息分隔符，与后端 MessageSeparator.SEPARATOR 保持一致 */
+const MSG_SEP = '|||'
+
 /** 加载某 crush 的历史对话（已落库 PG） */
 async function loadHistory(slug: string) {
   if (!slug) {
@@ -207,18 +212,29 @@ async function loadHistory(slug: string) {
   }
   try {
     const rows = await getChatHistory(slug)
-    // 过滤掉 system/tool 消息——前端只渲染 user/assistant 气泡
-    messages.value = rows
-        .filter((r) => r.role === 'user' || r.role === 'assistant')
-        .map((r) => ({ role: r.role, content: r.content }))
+    const list: ChatMessage[] = []
+    for (const r of rows) {
+      if (r.role !== 'user' && r.role !== 'assistant') continue
+      if (r.role === 'assistant' && r.content.includes(MSG_SEP)) {
+        // assistant 消息按分隔符切分，与流式显示保持一致
+        r.content.split(MSG_SEP).forEach((text) => {
+          const trimmed = text.trim()
+          if (trimmed) list.push({ role: 'assistant', content: trimmed })
+        })
+      } else {
+        list.push({ role: r.role, content: r.content })
+      }
+    }
+    messages.value = list
     await scrollToBottom()
   } catch {
     messages.value = []
   }
 }
 
-// 切换 crush 时重新加载该 crush 的历史
+// 切换 crush 时停止当前连播，并重新加载该 crush 的历史
 watch(currentSlug, (slug) => {
+  stopPlayback()
   if (slug) loadHistory(slug)
 })
 
@@ -256,6 +272,7 @@ async function send() {
   if (!text || !currentSlug.value || streaming.value) return
 
   messages.value.push({ role: 'user', content: text })
+  const firstAssistantIdx = messages.value.length
   input.value = ''
   streaming.value = true
   const acc = new MultiBubbleAccumulator()
@@ -273,6 +290,7 @@ async function send() {
     acc.reset()
     streaming.value = false
     await scrollToBottom()
+    void autoSynth(firstAssistantIdx, currentCrush.value?.voiceId)
   }
 }
 
@@ -280,6 +298,7 @@ async function send() {
 async function nudge() {
   if (!currentSlug.value || streaming.value) return
   streaming.value = true
+  const firstAssistantIdx = messages.value.length
   const acc = new MultiBubbleAccumulator()
   await scrollToBottom()
 
@@ -295,35 +314,72 @@ async function nudge() {
     acc.reset()
     streaming.value = false
     await scrollToBottom()
+    void autoSynth(firstAssistantIdx, currentCrush.value?.voiceId)
   }
 }
 
-/** 把指定 assistant 气泡的文本转 CosyVoice 语音并就地播放 */
-async function playVoice(msg: ChatMessage) {
-  if (msg.role !== 'assistant' || !msg.content || msg.synthesizing) return
-  // 已合成过则切换播放/暂停
-  if (msg.audioUrl) {
-    const audios = document.querySelectorAll<HTMLAudioElement>('audio.bubble-audio')
-    audios.forEach((a) => {
-      if (a.src === msg.audioUrl) {
-        if (a.paused) a.play()
-        else a.pause()
-    }})
-    return
-  }
+/** 顺序连播队列：从某条 assistant 气泡起，依次播放后续所有已合成语音 */
+let playQueue: HTMLAudioElement[] = []
+
+/** 停止当前连播 */
+function stopPlayback() {
+  playQueue.forEach((a) => {
+    a.pause()
+    a.src = ''
+  })
+  playQueue = []
+}
+
+/** 合成单条消息语音（幂等：已合成/合成中直接返回同一 promise），不播放 */
+function synthesizeBubble(msg: ChatMessage, voice?: string): Promise<void> {
+  if (msg.audioUrl) return Promise.resolve()
+  if (msg.synthPromise) return msg.synthPromise
   msg.synthesizing = true
-  try {
-    const blob = await synthesizeVoice(msg.content)
-    msg.audioUrl = URL.createObjectURL(blob)
-    await nextTick()
-    const audios = document.querySelectorAll<HTMLAudioElement>('audio.bubble-audio')
-    const target = Array.from(audios).find((a) => a.src === msg.audioUrl)
-    target?.play()
-  } catch (e) {
-    msg.audioUrl = undefined
-  } finally {
-    msg.synthesizing = false
+  msg.synthPromise = (async () => {
+    try {
+      const blob = await synthesizeVoice(msg.content, voice)
+      msg.audioUrl = URL.createObjectURL(blob)
+    } catch {
+      msg.audioUrl = undefined
+    } finally {
+      msg.synthesizing = false
+    }
+  })()
+  return msg.synthPromise
+}
+
+/** 后台自动合成：把一轮新产生的 assistant 消息逐条合成好（不播放），点 🎤 即秒播 */
+async function autoSynth(fromIdx: number, voice?: string) {
+  const snapshot = messages.value.slice(fromIdx)
+  for (const m of snapshot) {
+    if (m.role !== 'assistant' || !m.content) continue
+    await synthesizeBubble(m, voice)
   }
+}
+
+/** 点击 🎤：从该条 assistant 气泡起，顺序连播后续所有语音 */
+async function playVoice(msg: ChatMessage, index: number) {
+  if (msg.role !== 'assistant' || !msg.content) return
+  stopPlayback()
+  const voice = currentCrush.value?.voiceId
+  // 先把从 index 起的所有 assistant 消息补齐合成（幂等，已合成的秒过）
+  for (let i = index; i < messages.value.length; i++) {
+    const m = messages.value[i]
+    if (m.role !== 'assistant' || !m.content) continue
+    await synthesizeBubble(m, voice)
+  }
+  const audios = messages.value
+    .slice(index)
+    .filter((m) => m.role === 'assistant' && m.audioUrl)
+    .map((m) => new Audio(m.audioUrl!))
+  if (!audios.length) return
+  playQueue = audios
+  audios.forEach((a, i) => {
+    a.addEventListener('ended', () => {
+      if (i + 1 < audios.length) void audios[i + 1].play().catch(() => {})
+    })
+  })
+  void audios[0].play().catch(() => {})
 }
 
 onMounted(loadCrushes)

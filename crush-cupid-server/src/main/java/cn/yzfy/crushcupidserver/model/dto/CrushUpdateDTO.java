@@ -23,4 +23,7 @@ public class CrushUpdateDTO {
     private String relationshipStatus;
 
     private String impression;
+
+    /** CosyVoice 专属音色 voice_id（由声音设计接口产生） */
+    private String voiceId;
 }

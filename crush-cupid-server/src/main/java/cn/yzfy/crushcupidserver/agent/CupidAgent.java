@@ -20,6 +20,8 @@ import org.springframework.ai.content.Media;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.net.URI;
 import java.time.LocalDate;
@@ -55,6 +57,10 @@ public class CupidAgent {
     /**
      * 对话主入口，返回结构化多条消息流。LLM 用 {@value MessageSeparator#SEPARATOR} 分隔多条短消息，
      * 本方法用 {@link MessageSeparator} 流式切分成 {@link MultiChunkVO}，前端按 index 切气泡。
+     * <p>
+     * 同步阻塞处理：参数校验同步做（轻量，便于直接返回 HTTP 400）；DB 查询 + ChatClient 构造 +
+     * UserMessage 拼装等重 IO 用 {@code Mono.fromCallable + subscribeOn(boundedElastic)} 移到弹性线程池，
+     * 请求线程立即返回 Flux，不阻塞 Servlet 线程。
      */
     public Flux<MultiChunkVO> chat(ChatRequestDTO dto) {
         if (StrUtil.isBlank(dto.getCrushSlug())) {
@@ -65,42 +71,58 @@ public class CupidAgent {
         if (!hasText && !hasMedia) {
             throw BizException.badRequest("消息与 media 至少有一个非空");
         }
+        String provider = dto.getProvider();
+        String crushSlug = dto.getCrushSlug();
 
-        Crush crush = crushService.getBySlug(dto.getCrushSlug());
-        if (crush == null) {
-            throw BizException.notFound("未找到暗恋对象：" + dto.getCrushSlug());
-        }
-
-        // 多模态请求时校验目标供应商
-        if (hasMedia) {
-            chatClientProvider.ensureMultimodal(dto.getProvider());
-        }
-
-        ChatClient chatClient = chatClientProvider.get(dto.getProvider());
-        UserMessage userMessage = buildUserMessage(dto, hasMedia);
-        return streamMulti(chatClient, userMessage, crush);
+        // 预处理（DB 查询 / ChatClient 获取 / 消息构造）异步化到 boundedElastic，不阻塞请求线程
+        return Mono.fromCallable(() -> {
+                    Crush crush = crushService.getBySlug(crushSlug);
+                    if (crush == null) {
+                        throw BizException.notFound("未找到暗恋对象：" + crushSlug);
+                    }
+                    if (hasMedia) {
+                        chatClientProvider.ensureMultimodal(provider);
+                    }
+                    ChatClient chatClient = chatClientProvider.get(provider);
+                    UserMessage userMessage = buildUserMessage(dto, hasMedia);
+                    return new ChatContext(crush, chatClient, userMessage);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
     }
 
     /**
      * 主动消息入口：crush 主动发起连发多条短消息，模拟真人微信「不聊天时主动找你」。
      * 内部以元指令作为 user 消息触发模型主动发言，与 {@link #chat} 共用 persona/memory/分隔符协议。
+     * <p>
+     * 同样把预处理异步化到 boundedElastic，请求线程立即返回 Flux。
      */
     public Flux<MultiChunkVO> proactive(ProactiveRequestDTO dto) {
         if (StrUtil.isBlank(dto.getCrushSlug())) {
             throw BizException.badRequest("缺少 crushSlug");
         }
-        Crush crush = crushService.getBySlug(dto.getCrushSlug());
-        if (crush == null) {
-            throw BizException.notFound("未找到暗恋对象：" + dto.getCrushSlug());
-        }
+        String provider = dto.getProvider();
+        String crushSlug = dto.getCrushSlug();
+        String contextHint = dto.getContextHint();
 
-        ChatClient chatClient = chatClientProvider.get(dto.getProvider());
-        UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, dto.getContextHint()));
-        return streamMulti(chatClient, userMessage, crush);
+        return Mono.fromCallable(() -> {
+                    Crush crush = crushService.getBySlug(crushSlug);
+                    if (crush == null) {
+                        throw BizException.notFound("未找到暗恋对象：" + crushSlug);
+                    }
+                    ChatClient chatClient = chatClientProvider.get(provider);
+                    UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, contextHint));
+                    return new ChatContext(crush, chatClient, userMessage);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
     }
 
     /**
      * 共用的流式调用 + 多条消息切分。绑定 persona/memory advisor 与会话记忆。
+     * <p>
+     * 切分阶段用 {@code publishOn(boundedElastic)} 让下游 chunk 投递到弹性线程，
+     * 避免 emitter.send 的同步 socket 写阻塞 LLM 流式响应线程。
      */
     private Flux<MultiChunkVO> streamMulti(ChatClient chatClient, UserMessage userMessage, Crush crush) {
         String conversationId = "crush:" + crush.getId();
@@ -118,12 +140,20 @@ public class CupidAgent {
                 .content();
 
         // 用 Flux.defer 保证每次订阅都新建一个有状态的切分器
+        // publishOn 把切分 + 后续 emitter.send 移到弹性线程，不阻塞 LLM 流式响应线程
         return Flux.defer(() -> {
-            MessageSeparator splitter = new MessageSeparator();
-            return raw
-                    .concatMapIterable(splitter::accept)
-                    .concatWith(Flux.fromStream(splitter.finish().stream()));
-        });
+                    MessageSeparator splitter = new MessageSeparator();
+                    return raw
+                            .concatMapIterable(splitter::accept)
+                            .concatWith(Flux.fromStream(splitter.finish().stream()));
+                })
+                .publishOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 异步预处理结果容器：把 crush / chatClient / userMessage 打包传给 streamMulti。
+     */
+    private record ChatContext(Crush crush, ChatClient chatClient, UserMessage userMessage) {
     }
 
     /**

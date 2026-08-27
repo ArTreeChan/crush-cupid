@@ -49,6 +49,9 @@ public class CrushVO {
 
     private Date lastChatDate;
 
+    /** CosyVoice 专属音色 voice_id */
+    private String voiceId;
+
     private Integer version;
 
     private Date createdAt;

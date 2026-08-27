@@ -66,6 +66,9 @@ public class Crush  implements Serializable {
 
     private Date lastChatDate;
 
+    /** CosyVoice 专属音色 voice_id（由 /api/chat/voice/design 声音设计产生） */
+    private String voiceId;
+
     private Integer version;
 
     private Date createdAt;

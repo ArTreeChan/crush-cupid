@@ -21,6 +21,8 @@ export interface Crush {
   currentStage?: number
   status?: string
   totalMessages?: number
+  lastChatDate?: string
+  voiceId?: string
   version?: number
   createdAt?: string
   updatedAt?: string
@@ -36,6 +38,7 @@ export interface CrushCreatePayload {
   knowDuration?: string
   relationshipStatus?: string
   impression?: string
+  voiceId?: string
 }
 
 export interface SkillMeta {

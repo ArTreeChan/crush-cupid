@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS crush (
     status              VARCHAR(20) DEFAULT 'DRAFT',
     total_messages      INT DEFAULT 0,
     last_chat_date      TIMESTAMPTZ,
+    voice_id            VARCHAR(100),           -- CosyVoice 专属音色 voice_id（声音设计/复刻产生）
 
     version             INT DEFAULT 1,
     created_at          TIMESTAMPTZ DEFAULT NOW(),

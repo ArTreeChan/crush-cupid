@@ -36,6 +36,7 @@ public final class CrushConverter {
         c.setKnowDuration(dto.getKnowDuration());
         c.setRelationshipStatus(dto.getRelationshipStatus());
         c.setImpression(dto.getImpression());
+        c.setVoiceId(dto.getVoiceId());
         c.setCurrentStage(1);
         c.setStatus("DRAFT");
         c.setTotalMessages(0);
@@ -54,6 +55,7 @@ public final class CrushConverter {
         if (dto.getKnowDuration() != null) entity.setKnowDuration(dto.getKnowDuration());
         if (dto.getRelationshipStatus() != null) entity.setRelationshipStatus(dto.getRelationshipStatus());
         if (dto.getImpression() != null) entity.setImpression(dto.getImpression());
+        if (dto.getVoiceId() != null) entity.setVoiceId(dto.getVoiceId());
         entity.setUpdatedAt(new Date());
     }
 }

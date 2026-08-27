@@ -104,10 +104,23 @@
             <version>3.5.17</version>
         </dependency>
 
-        <!-- DeepSeek 官方 API：OpenAI 兼容协议 -->
+        <!-- DeepSeek 官方 API：OpenAI 兼容协议。
+             只引核心库（ChatModelRegistry 手写构建 OpenAiChatModel），
+             不引 starter——starter 的 autoconfig 会为 chat/embedding/image/audio 等能力自动建 bean，
+             缺 spring.ai.openai.api-key 时启动直接失败（如 OpenAiAudioSpeechModel），而这些 bean 无人使用 -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-model-openai</artifactId>
+            <artifactId>spring-ai-openai</artifactId>
+        </dependency>
+
+        <!--
+          MCP Client：文件上传图片时通过阿里云百炼 MCP（streamableHttp）调用通用 OCR 识别文字。
+          版本随 spring-ai-bom 1.1.2 管理；autoconfig 关闭（spring.ai.mcp.client.enabled=false），
+          由 OcrService 手动构建 McpSyncClient，未配置 OCR 时零开销。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-client</artifactId>
         </dependency>
 
         <!--

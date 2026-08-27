@@ -79,6 +79,9 @@
           <a-form-item label="认识时长"><a-input v-model:value="form.knowDuration" /></a-form-item>
           <a-form-item label="关系状态"><a-input v-model:value="form.relationshipStatus" /></a-form-item>
           <a-form-item label="印象"><a-textarea v-model:value="form.impression" :rows="3" /></a-form-item>
+          <a-form-item label="音色ID">
+            <a-input v-model:value="form.voiceId" placeholder="CosyVoice voice_id，空则走默认音色" />
+          </a-form-item>
         </a-form>
       </a-modal>
 
@@ -152,6 +155,7 @@ const form = reactive<CrushCreatePayload>({
   knowDuration: '',
   relationshipStatus: '',
   impression: '',
+  voiceId: '',
 })
 
 /** 重置表单 */
@@ -166,6 +170,7 @@ function resetForm() {
     knowDuration: '',
     relationshipStatus: '',
     impression: '',
+    voiceId: '',
   })
 }
 
@@ -199,6 +204,7 @@ function openEdit(record: Crush) {
     knowDuration: record.knowDuration ?? '',
     relationshipStatus: record.relationshipStatus ?? '',
     impression: record.impression ?? '',
+    voiceId: record.voiceId ?? '',
   })
   modalOpen.value = true
 }

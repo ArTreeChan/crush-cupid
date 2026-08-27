@@ -7,6 +7,22 @@ spring:
     password: 123456
     driver-class-name: org.postgresql.Driver
   ai:
+    # MCP Client（streamableHttp）：对接阿里云百炼「通用OCR文字识别」
+    # 端点即 mcp-servers.json 中的 baseUrl（该 json 为百炼官方调用模板，此处按 Spring AI 规范落地）；
+    # 鉴权 Authorization 头由 McpAuthConfig 的 McpSyncHttpClientRequestCustomizer 统一注入。
+    # 未配置 connections 时 OCR 自动降级：上传图片回退默认文本解析。
+    mcp:
+      client:
+        type: sync
+        # false：启动时不连接百炼（key 缺失/断网不阻塞应用启动），首次调 OCR 时由 OcrService 惰性 initialize
+        initialized: false
+        toolcallback:
+          enabled: false          # 不把 MCP 工具合并进 ChatClient（OCR 走 OcrService 直调，避免启动期 listTools 失败）
+        streamable-http:
+          connections:
+            ocr:
+              url: https://dashscope.aliyuncs.com/api/v1/mcps/mcp-NDAzYjRjNWQ1Njdl/mcp
+
     # Spring AI 自动配置仍保留，但实际由 crush.ai 多供应商注册中心接管路由；
     # 此处 base-url/api-key 仅作为兜底默认（ChatModelRegistry 未命中时由 Spring 注入的 ChatModel 使用）。
     openai:
@@ -28,11 +44,10 @@ spring:
       audio:
         speech:
           default-options:
-            # CosyVoice 声线：longxiaochun(女) / longshu(男) / longwan(女-温柔) 等
-            model: cosyvoice-v1
-            voice: longxiaochun
-            format: mp3
-            sample-rate: 22050
+            # CosyVoice v3-flash：WebSocket 直联合成（VoiceService 自建 DashScopeAudioSpeechApi，绕开 SDK 白名单路由）
+            # model 填模型名，voice 填该模型对应的音色（v3 系列配 _v3 音色，如 longyingling_v3 / longantai_v3）
+            model: cosyvoice-v3-flash
+            voice: longyingling_v3
 
 crush:
   # LLM 多供应商配置：所有供应商统一走 OpenAI 兼容协议

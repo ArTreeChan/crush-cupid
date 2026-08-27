@@ -2,6 +2,7 @@ package cn.yzfy.crushcupidserver.controller;
 
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.CrushBuildService;
+import cn.yzfy.crushcupidserver.agent.OcrService;
 import cn.yzfy.crushcupidserver.common.Result;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.dto.SourceImportDTO;
@@ -47,6 +48,7 @@ public class CrushSourceController {
     private final ChatSourceService chatSourceService;
     private final CrushVersionService crushVersionService;
     private final CrushBuildService crushBuildService;
+    private final OcrService ocrService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/sources")
@@ -74,21 +76,54 @@ public class CrushSourceController {
         if (file == null || file.isEmpty()) {
             throw BizException.badRequest("文件不能为空");
         }
+        boolean image = isImage(file);
         String content;
         try {
-            content = readFileContent(file);
+            if (image && ocrService.available()) {
+                // 图片 + OCR 已配置：走百炼 MCP OCR 提取文字
+                content = ocrService.recognize(readFileBytes(file));
+            } else {
+                // 默认方式：文本文件直接读；图片在 OCR 未配置时同样回退此路径
+                content = readFileContent(file);
+            }
         } catch (Exception e) {
-            throw new BizException("读取文件失败：" + e.getMessage());
+            throw new BizException("解析文件失败：" + e.getMessage());
         }
         ChatSource source = new ChatSource();
         source.setCrushId(crushId);
-        source.setFileType(StrUtil.blankToDefault(type, inferType(file.getOriginalFilename())));
+        source.setFileType(StrUtil.blankToDefault(type,
+                image ? SourceType.PHOTO.name() : inferType(file.getOriginalFilename())));
         source.setFileName(file.getOriginalFilename());
         source.setContent(content);
         source.setMessageCount(0);
         source.setCreatedAt(new Date());
         chatSourceService.save(source);
         return Result.ok(toSourceVO(source));
+    }
+
+    /** 判断上传文件是否图片（contentType 或扩展名） */
+    private boolean isImage(MultipartFile file) {
+        String ct = file.getContentType();
+        if (ct != null && ct.toLowerCase().startsWith("image/")) {
+            return true;
+        }
+        String name = file.getOriginalFilename();
+        if (name == null) {
+            return false;
+        }
+        String lower = name.toLowerCase();
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".bmp") || lower.endsWith(".gif") || lower.endsWith(".tiff")
+                || lower.endsWith(".webp");
+    }
+
+    /** 读取文件原始字节（OCR 用） */
+    private byte[] readFileBytes(MultipartFile file) {
+        try {
+            return file.getBytes();
+        } catch (IOException e) {
+            throw new BizException("读取文件失败：" + e.getMessage());
+        }
     }
 
     @GetMapping("/sources")

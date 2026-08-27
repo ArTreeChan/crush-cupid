@@ -3,11 +3,13 @@ package cn.yzfy.crushcupidserver.config;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.advisor.SafetyAdvisor;
 import cn.yzfy.crushcupidserver.agent.tool.CrushTools;
+import cn.yzfy.crushcupidserver.agent.tool.OcrTools;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.stereotype.Component;
@@ -33,18 +35,25 @@ public class ChatClientProvider {
     private final MessageChatMemoryAdvisor memoryAdvisor;
     private final SafetyAdvisor safetyAdvisor;
     private final CrushTools crushTools;
+    private final OcrTools ocrTools;
 
     /** 供应商代号 -> ChatClient（懒加载，线程安全由 ConcurrentHashMap 保证） */
     private final Map<String, ChatClient> clients = new ConcurrentHashMap<>();
 
-    /** 工具回调提供者，所有 ChatClient 共享 */
-    private ToolCallbackProvider toolCallbackProvider;
+    /** 本地 @Tool 方法回调，所有 ChatClient 共享 */
+    private ToolCallbackProvider methodToolCallbackProvider;
+
+    /** 工具回调（本地 @Tool），所有 ChatClient 共享 */
+    private ToolCallback[] allToolCallbacks;
 
     @PostConstruct
     public void init() {
-        this.toolCallbackProvider = MethodToolCallbackProvider.builder()
-                .toolObjects(crushTools)
+        this.methodToolCallbackProvider = MethodToolCallbackProvider.builder()
+                .toolObjects(crushTools, ocrTools)
                 .build();
+        // 只合并本地 @Tool 方法；MCP 远端工具不进 ChatClient（避免启动期对百炼 listTools 失败拖垮启动），
+        // OCR 主路径由 OcrService 直调 MCP，聊天工具面保持本地即可
+        this.allToolCallbacks = methodToolCallbackProvider.getToolCallbacks();
         // 预构造默认供应商的 ChatClient
         getOrCreate(chatModelRegistry.defaultProvider());
     }
@@ -73,7 +82,7 @@ public class ChatClientProvider {
         org.springframework.ai.chat.model.ChatModel chatModel = chatModelRegistry.get(provider);
         return ChatClient.builder(chatModel)
                 .defaultAdvisors(memoryAdvisor, safetyAdvisor)
-                .defaultToolCallbacks(toolCallbackProvider)
+                .defaultToolCallbacks(allToolCallbacks)
                 .build();
     }
 

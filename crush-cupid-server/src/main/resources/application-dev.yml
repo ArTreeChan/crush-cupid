@@ -94,8 +94,7 @@ crush:
   # 对话图片上传落盘
   upload:
     # 图片持久化根目录（对话中发送的图片 base64 落盘到此，历史回显用）
-    # 绝对路径，不受启动工作目录影响，与 WebMvcConfig 静态映射 file 路径一致
-    dir: D:/workspace/java/crush-Cupid/uploads
+    dir: D:/uploads
     # 对外访问 URL 前缀（与 WebMvcConfig 静态映射对齐）
     url-prefix: /api/uploads
   # 主动消息调度（crush 不依赖用户输入主动发消息）

@@ -176,7 +176,7 @@ crush:
     cache-ttl: 3600                    # 本地缓存过期秒数
   # 图片上传落盘（对话中发送的图片 base64 持久化到磁盘）
   upload:
-    dir: D:/workspace/java/crush-Cupid/uploads   # 绝对路径，与 WebMvcConfig 静态映射对齐
+    dir: D:/uploads                     # 绝对路径，与 WebMvcConfig 静态映射对齐；需确保目录存在（启动时自动创建）
     url-prefix: /api/uploads           # 对外访问 URL 前缀
   # 主动消息调度
   proactive:

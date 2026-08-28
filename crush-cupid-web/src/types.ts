@@ -95,11 +95,23 @@ export interface BuildEvent {
 
 /**
  * 多条消息流式 chunk：后端按 index 切气泡，跳变即新气泡。
+ * type=text 时 content 为增量文本；type=sticker 时 content 为表情包图片 URL（一次性下发）。
  */
 export interface MultiChunk {
   index: number
+  type?: 'text' | 'sticker'
   content: string
   done: boolean
+}
+
+/**
+ * 聊天多模态输入片段：图片（URL/base64）、音频、文本附件（base64）。
+ */
+export interface ChatMedia {
+  type: 'IMAGE_URL' | 'IMAGE_BASE64' | 'AUDIO_URL' | 'AUDIO_BASE64' | 'FILE_BASE64'
+  mimeType?: string
+  data: string
+  fileName?: string
 }
 
 /**
@@ -109,4 +121,6 @@ export interface ChatHistoryVO {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   createdAt: string
+  /** 关联的图片 URL（来自 chat_media 表）；无图片为 null/undefined */
+  mediaUrl?: string
 }

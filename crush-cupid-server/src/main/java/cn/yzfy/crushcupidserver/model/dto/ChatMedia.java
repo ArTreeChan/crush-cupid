@@ -21,8 +21,10 @@ public class ChatMedia {
     public static final String TYPE_AUDIO_URL = "AUDIO_URL";
     /** 音频 base64 */
     public static final String TYPE_AUDIO_BASE64 = "AUDIO_BASE64";
+    /** 文件附件 base64（txt/md/csv 等文本文件，后端抽取文字拼进消息） */
+    public static final String TYPE_FILE_BASE64 = "FILE_BASE64";
 
-    /** 类型：IMAGE_URL / IMAGE_BASE64 / AUDIO_URL / AUDIO_BASE64 */
+    /** 类型：IMAGE_URL / IMAGE_BASE64 / AUDIO_URL / AUDIO_BASE64 / FILE_BASE64 */
     private String type;
 
     /**
@@ -33,4 +35,7 @@ public class ChatMedia {
 
     /** 数据：URL 字符串（*_URL）或 base64 字符串（*_BASE64） */
     private String data;
+
+    /** 文件名（FILE_BASE64 时用于在消息里展示附件名，可选） */
+    private String fileName;
 }

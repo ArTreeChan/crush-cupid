@@ -4,9 +4,11 @@ import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.advisor.SafetyAdvisor;
 import cn.yzfy.crushcupidserver.agent.tool.CrushTools;
 import cn.yzfy.crushcupidserver.agent.tool.OcrTools;
+import cn.yzfy.crushcupidserver.agent.tool.StickerTools;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.tool.ToolCallback;
@@ -27,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @code provider
  * @createTime 2026-08-26
  */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class ChatClientProvider {
@@ -36,6 +39,7 @@ public class ChatClientProvider {
     private final SafetyAdvisor safetyAdvisor;
     private final CrushTools crushTools;
     private final OcrTools ocrTools;
+    private final StickerTools stickerTools;
 
     /** 供应商代号 -> ChatClient（懒加载，线程安全由 ConcurrentHashMap 保证） */
     private final Map<String, ChatClient> clients = new ConcurrentHashMap<>();
@@ -48,11 +52,13 @@ public class ChatClientProvider {
 
     @PostConstruct
     public void init() {
+        // 表情包不通过 tool call 实现——Spring AI 1.1.2 的 stream()+tool round-trip 不稳定，
+        // 会导致 LLM 想调 pickSticker 时 SSE 流卡住、表情包发不出来。
+        // 改为 prompt 标记方案：LLM 输出 [[sticker:情绪]] 文本标记，后端替换为真实图片 URL。
+        // LLM 仍自主思考何时发、发什么情绪（由 appendStickerGuide prompt 指引），只是不走 tool call。
         this.methodToolCallbackProvider = MethodToolCallbackProvider.builder()
                 .toolObjects(crushTools, ocrTools)
                 .build();
-        // 只合并本地 @Tool 方法；MCP 远端工具不进 ChatClient（避免启动期对百炼 listTools 失败拖垮启动），
-        // OCR 主路径由 OcrService 直调 MCP，聊天工具面保持本地即可
         this.allToolCallbacks = methodToolCallbackProvider.getToolCallbacks();
         // 预构造默认供应商的 ChatClient
         getOrCreate(chatModelRegistry.defaultProvider());
@@ -93,5 +99,38 @@ public class ChatClientProvider {
         if (!chatModelRegistry.isMultimodal(provider)) {
             throw BizException.badRequest("供应商 [" + provider + "] 不支持多模态，请切换到 qwen-vl / gpt-4o 等");
         }
+    }
+
+    /**
+     * 查询供应商是否声明支持多模态（vision/audio）。
+     * 聊天发图按此分流：多模态直传原图走视觉理解；非多模态降级 OCR 提取文字。
+     */
+    public boolean isMultimodal(String provider) {
+        return chatModelRegistry.isMultimodal(provider);
+    }
+
+    /**
+     * 解析最终生效的供应商代号：
+     * <ul>
+     *   <li>请求带图片 media 且当前供应商非多模态时，自动切换到已注册的多模态视觉模型
+     *       （优先 qwen-vl / qwen-native），让模型真正“看懂”聊天图片；</li>
+     *   <li>否则维持请求指定或默认供应商。</li>
+     * </ul>
+     *
+     * @param requestedProvider 请求级供应商代号（可为空）
+     * @param hasImageMedia     本次请求是否携带图片 media
+     * @return 最终生效的供应商代号
+     */
+    public String resolveProvider(String requestedProvider, boolean hasImageMedia) {
+        String base = StrUtil.isBlank(requestedProvider) ? chatModelRegistry.defaultProvider() : requestedProvider;
+        if (!hasImageMedia || chatModelRegistry.isMultimodal(base)) {
+            return base;
+        }
+        String multimodal = chatModelRegistry.firstMultimodal();
+        if (multimodal == null || multimodal.equals(base)) {
+            throw BizException.badRequest("当前供应商 [" + base + "] 不支持图片，且未配置任何多模态视觉模型");
+        }
+        log.info("请求带图片但供应商 [{}] 非多模态，自动切换到 [{}] 视觉模型", base, multimodal);
+        return multimodal;
     }
 }

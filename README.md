@@ -29,14 +29,17 @@
 | 多供应商路由 | DeepSeek / 通义千问 / OpenAI / Qwen-Native（DashScope 原生）一键切换，按 `provider` 字段路由 |
 | 多模态对话 | 支持图像 / 音频输入（qwen-vl / gpt-4o 等），自动校验供应商多模态能力 |
 | 多条消息 | LLM 用 `\|\|\|` 分隔连发短消息，像真人微信一样「在吗？」「哈哈哈」「你猜」 |
-| 主动消息 | crush 不依赖用户输入主动连发（「等 ta 主动找我」按钮），可带场景暗示 |
-| 语音合成 | 接入 CosyVoice v3-flash（WebSocket 直联合成），回复可一键转 mp3，支持声音设计生成专属声线 |
+| 表情包 | LLM 按情绪/性格/情境自主决定何时发表情包，后端 prompt 标记 `[[sticker:情绪]]` 方案（绕开 Spring AI 流式 tool call 不稳定），从 ChineseBQB 素材库随机抽取，经 jsdelivr CDN 加速，独立气泡渲染 |
+| 图片上传持久化 | 对话中上传图片自动落盘（`chat_media` 表独立存储 URL），刷新/重启后历史回显不丢失 |
+| 主动消息 | crush 不依赖用户输入主动连发（「等 ta 主动找我」按钮），可带场景暗示；SSE 心跳保活 |
+| 语音合成 | CosyVoice v2 模型（WebSocket 直联合成），全手动点击播放，支持声音设计生成专属声线 |
 | Persona 建模 | 5 层人格模型（硬规则 → 身份 → 说话风格 → 情感模式 → 关系行为） |
 | 对话记忆入库 | 对话历史落库 PostgreSQL（自封装 `PgChatMemoryRepository`），跨刷新/重启续上下文 |
-| 历史加载 | 进入对话页自动拉取该 crush 的历史消息渲染气泡 |
+| 历史加载 | 进入对话页自动拉取该 crush 的历史消息渲染气泡（文本 + 图片 + 表情包） |
 | OCR 识别 | 对接阿里云百炼「通用 OCR」MCP（streamableHttp），聊天截图 / 照片可识别文字，未配置自动降级 |
 | 工具调用 | 封装 `@Tool`（列出暗恋对象 / 查画像 / 拉远端 prompt / OCR 识别） |
 | Advisor 封装 | 安全边界 / Persona / Memory 三个自定义 advisor 注入系统提示 |
+| 线程池安全治理 | 虚拟线程池 + 信号量限流（SSE 并发上限 200）+ Flux 5 分钟超时 + 订阅取消防资源泄漏 |
 
 ---
 
@@ -55,17 +58,25 @@
                     │                   │     └─ MessageChatMemoryAdvisor  │
                     │                   ├── Tools (@Tool)                  │
                     │                   ├── MessageSeparator (多条切分)     │
+                    │                   ├── StickerService (表情包)        │
+                    │                   │     └─ ChineseBQB manifest       │
+                    │                   │        + jsdelivr CDN 加速       │
+                    │                   ├── ImageStorageService (图片持久化)│
+                    │                   │     └─ chat_media 表            │
                     │                   └── PgChatMemoryRepository          │
                     │                         │ (基于 conversation 表)     │
                     │  VoiceService ── DashScopeAudioSpeechApi(WebSocket) ──▶ mp3 │
                     │  OcrService ── McpSyncClient ──▶ 百炼通用OCR          │
+                    │  ProactivePushService ── SSE 心跳推送                  │
+                    │  ThreadPoolsConfig ── 虚拟线程池 + 信号量限流           │
                     │  skill/ ── GitHubRawSkillClient ──▶ GitHub raw       │
                     │        └─ CachingSkillResourceClient(TTL)             │
                     │  PostgreSQL  ◀── MyBatis-Plus                        │
+                    │    conversation 表 + chat_media 表                    │
                     └─────────────────────────────────────────────────────┘
 ```
 
-**核心链路**：`SkillResourceClient`（Adapter）从 GitHub raw 拉取 `SKILL.md` + `prompts/*.md`，`CachingSkillResourceClient`（Decorator）加 TTL 缓存；`CupidAgent`（Facade）按 `provider` 路由到对应 `ChatClient`，编排 advisor + tool + memory，输出经 `MessageSeparator` 切成多条消息流式回传；`PgChatMemoryRepository` 把对话历史落库 PG。
+**核心链路**：`SkillResourceClient`（Adapter）从 GitHub raw 拉取 `SKILL.md` + `prompts/*.md`，`CachingSkillResourceClient`（Decorator）加 TTL 缓存；`CupidAgent`（Facade）按 `provider` 路由到对应 `ChatClient`，编排 advisor + tool + memory，输出经 `MessageSeparator` 切成多条消息流式回传；`PgChatMemoryRepository` 把对话历史落库 PG；图片 URL 独立存 `chat_media` 表，表情包走 `[[sticker:情绪]]` prompt 标记方案绕开 Spring AI 流式 tool call 不稳定。
 
 ---
 
@@ -163,6 +174,37 @@ crush:
     # GitHub raw 基础地址，兼容多种写法（raw 目录 / github.com/tree / 指向 SKILL.md 的完整地址）
     base-url: https://raw.githubusercontent.com/xiaoheizi8/crush-skills/main
     cache-ttl: 3600                    # 本地缓存过期秒数
+  # 图片上传落盘（对话中发送的图片 base64 持久化到磁盘）
+  upload:
+    dir: D:/workspace/java/crush-Cupid/uploads   # 绝对路径，与 WebMvcConfig 静态映射对齐
+    url-prefix: /api/uploads           # 对外访问 URL 前缀
+  # 主动消息调度
+  proactive:
+    enabled: true
+    scan-interval-ms: 60000
+    cooldown-minutes: 90
+    daily-limit: 3
+    max-concurrent: 2                 # 并发 LLM 决策任务上限
+  # 表情包配置
+  sticker:
+    enabled: true
+    cache-ttl: 3600
+    chinesebqb:
+      repo: zhaoolee/ChineseBQB
+      default-emotion: 开心
+      topics:                         # 情绪 → ChineseBQB 目录映射
+        开心: 001Cat
+        可爱: 001Cat
+        无语: 006Pikachu
+        生气: 023Aubrey
+        委屈: 023Aubrey
+        吃瓜: 056Doraemon
+        疑惑: 007Conan
+        尴尬: 007Conan
+        撒娇: 001Cat
+        么么哒: 056Doraemon
+        晚安: 056Doraemon
+        早安: 056Doraemon
 ```
 
 > `qwen-native` 供应商由 Spring AI Alibaba 自动注册（DashScope 原生协议），无需在此声明。缺 `api-key` 的供应商启动时自动跳过，不阻塞。
@@ -203,7 +245,16 @@ crush:
 }
 ```
 
-**SSE 多条消息协议**：后端按 `index` 切气泡，每条 `{index, content, done}`，前端按 index 跳变即新气泡。
+**SSE 多条消息协议**：后端按 `index` 切气泡，每条 `{index, content, type, done}`，前端按 index 跳变即新气泡。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| index | int | 气泡序号，相同 index 的 chunk 追加内容，不同 index 开新气泡 |
+| content | string | 文本片段或表情包 URL |
+| type | string | `text` 文本气泡 / `sticker` 表情包气泡 |
+| done | boolean | 当前 index 是否完成（流式切分完成后最后一个 chunk 为 true） |
+
+**表情包协议**：`type=sticker` 的 chunk，content 为图片 URL（经 `[[sticker:情绪]]` 标记方案由后端替换为真实 URL），前端按图片渲染独立气泡，跳过语音合成。
 
 ---
 
@@ -213,10 +264,15 @@ crush:
 crush-cupid-server/                      crush-cupid-web/
 ├── src/main/java/cn/yzfy/crushcupidserver/
 │   ├── agent/        # CupidAgent 门面 + Tools + Advisors + MessageSeparator + VoiceService + OcrService
+│   │                   + StickerService (表情包) + ImageStorageService (图片持久化) + StickerSanitizer
+│   ├── agent/tool/   # StickerTools (表情包 tool) + CrushTools + OcrTools
+│   ├── agent/proactive/ # ProactiveSchedulerService + ProactivePushService (主动消息 + SSE 心跳)
 │   ├── skill/        # GitHub 远端 Skill 调用（Adapter + Decorator）
 │   ├── model/        # entity / dto / vo / mapper / service / converter
+│   │                   + ChatMedia (chat_media 表独立存储图片 URL)
 │   ├── controller/   # REST + SSE 接口
-│   ├── config/       # AiConfig / LlmProperties / ChatModelRegistry / ChatClientProvider / McpAuthConfig / OcrProperties / PgChatMemoryRepository
+│   ├── config/       # AiConfig / LlmProperties / ChatModelRegistry / ChatClientProvider / McpAuthConfig / OcrProperties
+│   │                   + PgChatMemoryRepository + ThreadPoolsConfig + UploadProperties + WebMvcConfig
 │   ├── common/       # 统一返回结构 Result<T>
 │   └── exception/    # 全局异常处理
 └── src/main/resources/
@@ -228,12 +284,16 @@ crush-cupid-server/                      crush-cupid-web/
 
 ## 注意事项
 
+- **Spring AI 流式 tool call 不稳定**：`stream()` + tool call round-trip 在 Spring AI 1.1.2 下可能卡住 SSE。表情包因此采用 **prompt 标记方案**（LLM 输出 `[[sticker:情绪]]`，后端替换为真实 URL），不走 tool call。CrushTools / OcrTools 走非流式链路不受影响。
+- **表情包历史回显**：`PgChatMemoryRepository` 写入侧原样存 `[[sticker:URL]]`（保留 URL），读取侧注入 prompt 前清洗为占位文本（防 LLM 模仿）。前端 `loadHistory` 解析标记提取 URL 渲染 sticker 气泡。
+- **图片独立存储**：对话中上传的图片 URL 独立存 `chat_media` 表（不拼进消息文本），按 `[图片]` 标记顺序 FIFO 匹配回填。`WebMvcConfig` 注册 `/api/uploads/**` → `file:D:/.../uploads/` 静态映射，**必须确保目录存在且路径正确**。
+- **SSE 并发上限**：虚拟线程池 + 信号量限流 200，超过返回 503。Flux 5 分钟超时自动释放资源。Emitter 关闭（断连/超时/完成）时 dispose Flux 订阅 + release 信号量，防止资源泄漏。
+- **语音全手动**：回复生成后不自动合成语音，需点击 🎤 按钮逐条触发。sticker 气泡天然跳过语音合成。
+- **CosyVoice v2 音色**：v2 模型配 `longxiaochun_v2` 音色；v3 系列配 `_v3` 系统音色。参考 [阿里云文档](https://www.alibabacloud.com/help/zh/model-studio/cosyvoice-voice-list)。
 - **DeepSeek Function Calling 不稳定**：架构以 advisor 注入 skill prompt 为主链路，工具调用只作可选增强，happy path 不依赖模型调工具。
 - **本机到 GitHub raw 仅 IPv6 可达**：`spring-boot-maven-plugin` 里已配 `-Djava.net.preferIPv6Addresses=true`，用别的启动方式时需自行带上。
 - **Spring AI 版本对齐**：项目用 Spring AI 1.1.2（而非最新 1.1.8），是为了对齐 Spring AI Alibaba 1.1.2.3 的硬依赖；所用 API 均为 1.1 GA 起即有，降级安全。
-- **多模态 Media 不入库**：`PgChatMemoryRepository` 只存 `message.getText()` 纯文本，图像/音频 Media 下次对话需重发；历史记忆主要靠文本上下文。
 - **OCR 可降级**：未配置 `OCR_MCP_URL` / MCP 连接时，`OcrService.available()` 返回 false，文件上传自动回退默认文本解析，不影响主流程。
-- **CosyVoice v3 音色**：v3 系列（v3-flash / v3.5）配 `_v3` 系统音色（如 `longyingling_v3`），或用 `/api/chat/voice/design` 以文字描述生成专属 voice_id；v2 仅支持上传音频复刻。 参考https://www.alibabacloud.com/help/zh/model-studio/cosyvoice-voice-list?spm=a2c63.p38356.help-menu-2400256.d_0_3_4_5_1.35c36bdfdJop3g
 
 ---
 

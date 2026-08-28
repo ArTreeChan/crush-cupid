@@ -3,12 +3,14 @@ package cn.yzfy.crushcupidserver.agent;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.advisor.MemoryAdvisor;
 import cn.yzfy.crushcupidserver.agent.advisor.PersonaAdvisor;
+import cn.yzfy.crushcupidserver.common.DocumentTextExtractor;
 import cn.yzfy.crushcupidserver.config.ChatClientProvider;
 import cn.yzfy.crushcupidserver.exception.BizException;
-import cn.yzfy.crushcupidserver.model.dto.ChatMedia;
 import cn.yzfy.crushcupidserver.model.dto.ChatRequestDTO;
 import cn.yzfy.crushcupidserver.model.dto.ProactiveRequestDTO;
+import cn.yzfy.crushcupidserver.model.entity.ChatMedia;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
+import cn.yzfy.crushcupidserver.model.service.ChatMediaService;
 import cn.yzfy.crushcupidserver.model.service.CrushService;
 import cn.yzfy.crushcupidserver.model.vo.MultiChunkVO;
 import lombok.RequiredArgsConstructor;
@@ -21,7 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
+import reactor.core.scheduler.Scheduler;
 
 import java.net.URI;
 import java.time.LocalDate;
@@ -29,8 +31,11 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Date;
 import java.util.List;
-import java.util.stream.Stream;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * @className CupidAgent
@@ -38,7 +43,7 @@ import java.util.stream.Stream;
  * 供应商路由与多模态拼装细节。
  * <p>
  * 路由：按请求级 {@code provider} 选择 ChatClient；缺省走默认供应商（如 deepseek）。
- * 多模态：若请求带 {@link ChatMedia}，拼装为带 media 的 {@link UserMessage} 发送给模型；
+ * 多模态：若请求带 {@link cn.yzfy.crushcupidserver.model.dto.ChatMedia}，拼装为带 media 的 {@link UserMessage} 发送给模型；
  * 同时校验目标供应商是否声明支持多模态（vision/audio）。
  * @author 一朝风月
  * @code facade
@@ -53,14 +58,18 @@ public class CupidAgent {
     private final CrushService crushService;
     private final PersonaAdvisor personaAdvisor;
     private final MemoryAdvisor memoryAdvisor;
+    private final StickerService stickerService;
+    private final ImageStorageService imageStorageService;
+    private final ChatMediaService chatMediaService;
+    private final Scheduler aiScheduler;
 
     /**
      * 对话主入口，返回结构化多条消息流。LLM 用 {@value MessageSeparator#SEPARATOR} 分隔多条短消息，
      * 本方法用 {@link MessageSeparator} 流式切分成 {@link MultiChunkVO}，前端按 index 切气泡。
      * <p>
      * 同步阻塞处理：参数校验同步做（轻量，便于直接返回 HTTP 400）；DB 查询 + ChatClient 构造 +
-     * UserMessage 拼装等重 IO 用 {@code Mono.fromCallable + subscribeOn(boundedElastic)} 移到弹性线程池，
-     * 请求线程立即返回 Flux，不阻塞 Servlet 线程。
+     * UserMessage 拼装等重 IO 用 {@code Mono.zip + subscribeOn(aiScheduler)} 并行移到虚拟线程，
+     * DB 查询和媒体处理并行执行，总耗时 = max(DB, 媒体处理) 而非相加，请求线程立即返回 Flux。
      */
     public Flux<MultiChunkVO> chat(ChatRequestDTO dto) {
         if (StrUtil.isBlank(dto.getCrushSlug())) {
@@ -74,20 +83,30 @@ public class CupidAgent {
         String provider = dto.getProvider();
         String crushSlug = dto.getCrushSlug();
 
-        // 预处理（DB 查询 / ChatClient 获取 / 消息构造）异步化到 boundedElastic，不阻塞请求线程
-        return Mono.fromCallable(() -> {
-                    Crush crush = crushService.getBySlug(crushSlug);
-                    if (crush == null) {
-                        throw BizException.notFound("未找到暗恋对象：" + crushSlug);
-                    }
-                    if (hasMedia) {
-                        chatClientProvider.ensureMultimodal(provider);
-                    }
-                    ChatClient chatClient = chatClientProvider.get(provider);
-                    UserMessage userMessage = buildUserMessage(dto, hasMedia);
-                    return new ChatContext(crush, chatClient, userMessage);
-                })
-                .subscribeOn(Schedulers.boundedElastic())
+        // 若请求带图片且当前供应商非多模态，自动切到多模态视觉模型（让模型真正"看懂"聊天图片）
+        String effectiveProvider = chatClientProvider.resolveProvider(provider, hasImageMedia(dto));
+
+        // 预处理并行化：DB 查询 ‖ 媒体处理，总耗时 = max(两者) 而非相加
+        long preStart = System.currentTimeMillis();
+        return Mono.zip(
+                    Mono.fromCallable(() -> crushService.getBySlug(crushSlug))
+                            .subscribeOn(aiScheduler),
+                    Mono.fromCallable(() -> buildUserMessage(dto, effectiveProvider))
+                            .subscribeOn(aiScheduler),
+                    (crush, built) -> {
+                        if (crush == null) {
+                            throw BizException.notFound("未找到暗恋对象：" + crushSlug);
+                        }
+                        // 图片 URL 存入 chat_media 表（独立于 conversation，不受 saveAll 覆盖影响）
+                        if (built.imageUrls() != null && !built.imageUrls().isEmpty()) {
+                            saveChatMedia(crush.getId(), built.imageUrls());
+                        }
+                        ChatClient chatClient = chatClientProvider.get(effectiveProvider);
+                        return new ChatContext(crush, chatClient, built.message());
+                    })
+                .doOnSubscribe(s -> log.info("[chat] 预处理开始 crush={}", crushSlug))
+                .doOnNext(ctx -> log.info("[chat] 预处理完成 耗时={}ms crush={}",
+                        System.currentTimeMillis() - preStart, crushSlug))
                 .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
     }
 
@@ -114,14 +133,14 @@ public class CupidAgent {
                     UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, contextHint));
                     return new ChatContext(crush, chatClient, userMessage);
                 })
-                .subscribeOn(Schedulers.boundedElastic())
+                .subscribeOn(aiScheduler)
                 .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
     }
 
     /**
      * 共用的流式调用 + 多条消息切分。绑定 persona/memory advisor 与会话记忆。
      * <p>
-     * 切分阶段用 {@code publishOn(boundedElastic)} 让下游 chunk 投递到弹性线程，
+     * 切分阶段用 {@code publishOn(aiScheduler)} 让下游 chunk 投递到虚拟线程，
      * 避免 emitter.send 的同步 socket 写阻塞 LLM 流式响应线程。
      */
     private Flux<MultiChunkVO> streamMulti(ChatClient chatClient, UserMessage userMessage, Crush crush) {
@@ -137,23 +156,73 @@ public class CupidAgent {
                         .param(PersonaAdvisor.CONTEXT_KEY, persona)
                         .param(MemoryAdvisor.CONTEXT_KEY, memory))
                 .stream()
-                .content();
+                .content()
+                // 日志：打印 LLM 原始输出，排查 ||| 分隔符和 [[sticker:...]] 标记是否存在
+                .doOnNext(chunk -> {
+                    if (chunk != null && !chunk.isEmpty()) {
+                        // 只在包含关键标记时打印，避免刷屏
+                        if (chunk.contains("|||") || chunk.contains("sticker") || chunk.contains("[")) {
+                            log.info("[llm-raw] crush={} chunk={}", crush.getId(), chunk.length() > 200 ? chunk.substring(0, 200) + "..." : chunk);
+                        }
+                    }
+                });
 
         // 用 Flux.defer 保证每次订阅都新建一个有状态的切分器
-        // publishOn 把切分 + 后续 emitter.send 移到弹性线程，不阻塞 LLM 流式响应线程
+        // publishOn 把切分 + 后续 emitter.send 移到虚拟线程，不阻塞 LLM 流式响应线程
         return Flux.defer(() -> {
                     MessageSeparator splitter = new MessageSeparator();
                     return raw
                             .concatMapIterable(splitter::accept)
                             .concatWith(Flux.fromStream(splitter.finish().stream()));
                 })
-                .publishOn(Schedulers.boundedElastic());
+                .publishOn(aiScheduler)
+                // 表情包标记 -> 实际图片 URL：
+                // tool 路径：pickSticker 返回的标记 content 已是完整 URL（http/raw 或 /api/stickers），直接用；
+                // prompt 标记路径：content 是情绪词，查 StickerService 随机抽图替换；
+                // 两种路径都拿不到素材时丢弃该气泡，不影响文本流
+                .map(vo -> {
+                    if (MultiChunkVO.TYPE_STICKER.equals(vo.getType())) {
+                        String content = vo.getContent();
+                        if (isUrl(content)) {
+                            // tool 产出的完整 URL，直接用
+                        } else {
+                            // 情绪词，查本地/远端素材
+                            String url = stickerService.randomSticker(content);
+                            log.info("[sticker-diag] emotion='{}' -> url={}", content, url);
+                            if (url == null) {
+                                vo.setType(MultiChunkVO.TYPE_TEXT);
+                                vo.setContent("");
+                                return vo;
+                            }
+                            vo.setContent(url);
+                        }
+                    }
+                    return vo;
+                });
     }
 
     /**
      * 异步预处理结果容器：把 crush / chatClient / userMessage 打包传给 streamMulti。
      */
     private record ChatContext(Crush crush, ChatClient chatClient, UserMessage userMessage) {
+    }
+
+    /**
+     * 判断 sticker 标记 content 是否已是完整 URL（tool 路径产出）。
+     * 本地路径 /api/stickers/... 或 http(s) 远端 URL 均算。
+     */
+    private boolean isUrl(String s) {
+        return s != null && (s.startsWith("http://") || s.startsWith("https://") || s.startsWith(StickerService.URL_PREFIX));
+    }
+
+    /** 本次请求是否携带图片 media（图片需要视觉模型理解）。 */
+    private boolean hasImageMedia(ChatRequestDTO dto) {
+        if (dto.getMedia() == null) {
+            return false;
+        }
+        return dto.getMedia().stream()
+                .anyMatch(m -> cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_URL.equals(m.getType())
+                        || cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_BASE64.equals(m.getType()));
     }
 
     /**
@@ -171,15 +240,38 @@ public class CupidAgent {
         String conversationId = "crush:" + crush.getId();
         UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, contextHint, true));
         ChatClient chatClient = chatClientProvider.getDefault();
-        return chatClient.prompt()
-                .messages(userMessage)
-                .advisors(a -> a
-                        .advisors(personaAdvisor, memoryAdvisor)
-                        .param(ChatMemory.CONVERSATION_ID, conversationId)
-                        .param(PersonaAdvisor.CONTEXT_KEY, buildPersona(crush))
-                        .param(MemoryAdvisor.CONTEXT_KEY, buildMemory(crush)))
-                .call()
-                .content();
+        return callWithTimeout(() ->
+                        chatClient.prompt()
+                                .messages(userMessage)
+                                .advisors(a -> a
+                                        .advisors(personaAdvisor, memoryAdvisor)
+                                        .param(ChatMemory.CONVERSATION_ID, conversationId)
+                                        .param(PersonaAdvisor.CONTEXT_KEY, buildPersona(crush))
+                                        .param(MemoryAdvisor.CONTEXT_KEY, buildMemory(crush)))
+                                .call()
+                                .content(),
+                java.time.Duration.ofSeconds(PROACTIVE_CALL_TIMEOUT_SECONDS));
+    }
+
+    /** 非流式 LLM 调用超时兜底（秒）：守护线程上挂住会永久占用 proactive 信号量槽位与虚拟线程，必须限时。 */
+    private static final long PROACTIVE_CALL_TIMEOUT_SECONDS = 90;
+
+    /**
+     * 带超时的阻塞调用：把 LLM 调用放到 CompletableFuture 上，超时抛 {@link BizException} 而非永久阻塞，
+     * 保证调用方（主动消息调度持有信号量）异常路径能及时释放资源。
+     */
+    private <T> T callWithTimeout(Supplier<T> supplier, java.time.Duration timeout) {
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(supplier);
+        try {
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            future.cancel(true);
+            throw new BizException("模型调用超时（" + timeout.toSeconds() + "s）");
+        } catch (Exception e) {
+            future.cancel(true);
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new BizException("模型调用失败：" + cause.getMessage());
+        }
     }
 
     /**
@@ -213,27 +305,114 @@ public class CupidAgent {
     }
 
     /**
-     * 构造用户消息：纯文本走简单 UserMessage，多模态则附加 Media 列表。
+     * 构造用户消息（按供应商能力分流媒体）：
+     * <ul>
+     *   <li>多模态供应商：图片/音频以 {@link Media} 直传，模型视觉/听觉理解（分享生活照的主路径，不走 OCR）</li>
+     *   <li>非多模态供应商：图片走 OCR 兜底提取文字（截图/文档类仍可聊）；提取不到文字则告知模型「对方发了图但你看不见」；
+     *       附件（FILE_BASE64）抽取文本内容拼进消息（与供应商能力无关）</li>
+     * </ul>
+     * <p>
+     * 图片 URL 不再拼进消息文本，而是收集到 {@code imageUrls} 列表，由调用方存入 chat_media 表。
+     * 消息文本中只插入 {@code [图片]} 占位标记，供 ChatHistoryController 顺序匹配回填。
+     *
+     * @return {@link BuiltMessage} 包含 UserMessage + 图片 URL 列表
      */
-    private UserMessage buildUserMessage(ChatRequestDTO dto, boolean hasMedia) {
+    private BuiltMessage buildUserMessage(ChatRequestDTO dto, String provider) {
         String text = StrUtil.blankToDefault(dto.getMessage(), "");
-        if (!hasMedia) {
-            return new UserMessage(text);
+        List<cn.yzfy.crushcupidserver.model.dto.ChatMedia> mediaList = dto.getMedia();
+        if (mediaList == null || mediaList.isEmpty()) {
+            return new BuiltMessage(new UserMessage(text), List.of());
         }
+        boolean multimodal = chatClientProvider.isMultimodal(provider);
+        StringBuilder enriched = new StringBuilder(text);
         List<Media> medias = new ArrayList<>();
-        for (ChatMedia m : dto.getMedia()) {
-            medias.add(toMedia(m));
+        List<String> imageUrls = new ArrayList<>();
+
+        for (cn.yzfy.crushcupidserver.model.dto.ChatMedia m : mediaList) {
+            if (StrUtil.isBlank(m.getType()) || StrUtil.isBlank(m.getData())) {
+                throw BizException.badRequest("ChatMedia 的 type/data 不能为空");
+            }
+            switch (m.getType()) {
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_URL, cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_BASE64 -> {
+                    String imageUrl;
+                    try {
+                        imageUrl = imageStorageService.storeImage(m);
+                    } catch (Exception e) {
+                        log.warn("图片持久化失败，跳过回显：{}", e.getMessage());
+                        imageUrl = null;
+                    }
+                    if (multimodal) {
+                        medias.add(toMedia(m));
+                    } else {
+                        enriched.append("\n[对方发来一张图片，你暂时无法查看图片内容，请不要编造图片细节]\n");
+                    }
+                    if (imageUrl != null) {
+                        imageUrls.add(imageUrl);
+                        // 占位标记：ChatHistoryController 按 [图片] 出现顺序匹配 chat_media 记录回填 URL
+                        enriched.append("[图片]");
+                    }
+                }
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_FILE_BASE64 -> {
+                    String name = StrUtil.blankToDefault(m.getFileName(), "附件");
+                    byte[] bytes = Base64.getDecoder().decode(m.getData());
+                    String content;
+                    try {
+                        content = DocumentTextExtractor.extract(m.getFileName(), bytes);
+                    } catch (Exception e) {
+                        log.warn("对话附件解析失败 name={}：{}", name, e.getMessage());
+                        content = "(附件解析失败)";
+                    }
+                    enriched.append("\n[对方发来附件「").append(name).append("」，内容如下]\n")
+                            .append(StrUtil.blankToDefault(content, "(内容为空)")).append("\n");
+                }
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_URL, cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_BASE64 -> {
+                    if (multimodal) {
+                        medias.add(toMedia(m));
+                    } else {
+                        throw BizException.badRequest("当前供应商不支持语音输入，请切换多模态供应商");
+                    }
+                }
+                default -> throw BizException.badRequest("不支持的 ChatMedia type：" + m.getType());
+            }
         }
-        return UserMessage.builder()
-                .text(text)
-                .media(medias)
-                .build();
+        UserMessage msg = medias.isEmpty()
+                ? new UserMessage(enriched.toString())
+                : UserMessage.builder().text(enriched.toString()).media(medias).build();
+        return new BuiltMessage(msg, imageUrls);
+    }
+
+    /** buildUserMessage 的返回容器：UserMessage + 图片 URL 列表 */
+    private record BuiltMessage(UserMessage message, List<String> imageUrls) {
     }
 
     /**
-     * 将 DTO 的 {@link ChatMedia} 转为 Spring AI 的 {@link Media}。
+     * 把图片 URL 列表批量存入 chat_media 表，独立于 conversation，
+     * 不受 PgChatMemoryRepository.saveAll 的覆盖语义影响。
      */
-    private Media toMedia(ChatMedia m) {
+    private void saveChatMedia(Long crushId, List<String> imageUrls) {
+        try {
+            Date now = new Date();
+            List<ChatMedia> entities = new ArrayList<>(imageUrls.size());
+            for (String url : imageUrls) {
+                ChatMedia e = new ChatMedia();
+                e.setCrushId(crushId);
+                e.setRole("user");
+                e.setMediaUrl(url);
+                e.setMediaType("image");
+                e.setCreatedAt(now);
+                entities.add(e);
+            }
+            chatMediaService.saveBatch(entities);
+            log.info("[chat] 图片 URL 存入 chat_media：crushId={} count={}", crushId, entities.size());
+        } catch (Exception e) {
+            log.error("[chat] chat_media 存储失败 crushId={}：{}", crushId, e.getMessage());
+        }
+    }
+
+    /**
+     * 将 DTO 的 {@link cn.yzfy.crushcupidserver.model.dto.ChatMedia} 转为 Spring AI 的 {@link Media}。
+     */
+    private Media toMedia(cn.yzfy.crushcupidserver.model.dto.ChatMedia m) {
         if (StrUtil.isBlank(m.getType()) || StrUtil.isBlank(m.getData())) {
             throw BizException.badRequest("ChatMedia 的 type/data 不能为空");
         }
@@ -242,12 +421,12 @@ public class CupidAgent {
                 : inferMimeType(m.getType());
         try {
             switch (m.getType()) {
-                case ChatMedia.TYPE_IMAGE_URL:
-                case ChatMedia.TYPE_AUDIO_URL:
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_URL:
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_URL:
                     // URL 形态：用公开构造器 new Media(MimeType, URI)
                     return new Media(mime, URI.create(m.getData()));
-                case ChatMedia.TYPE_IMAGE_BASE64:
-                case ChatMedia.TYPE_AUDIO_BASE64:
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_BASE64:
+                case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_BASE64:
                     // base64 形态：用 Builder 接收解码后的 byte[]
                     return Media.builder()
                             .mimeType(mime)
@@ -268,8 +447,8 @@ public class CupidAgent {
      */
     private MimeType inferMimeType(String type) {
         return switch (type) {
-            case ChatMedia.TYPE_IMAGE_URL, ChatMedia.TYPE_IMAGE_BASE64 -> MimeType.valueOf("image/png");
-            case ChatMedia.TYPE_AUDIO_URL, ChatMedia.TYPE_AUDIO_BASE64 -> MimeType.valueOf("audio/wav");
+            case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_URL, cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_IMAGE_BASE64 -> MimeType.valueOf("image/png");
+            case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_URL, cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_BASE64 -> MimeType.valueOf("audio/wav");
             default -> MimeType.valueOf("application/octet-stream");
         };
     }
@@ -287,6 +466,7 @@ public class CupidAgent {
         appendLayer(sb, "Layer 3 情感模式", c.getPersonaLayer3());
         appendLayer(sb, "Layer 4 关系行为", c.getPersonaLayer4());
         appendMultiMessageGuide(sb);
+        appendStickerGuide(sb);
         return sb.toString();
     }
 
@@ -296,11 +476,46 @@ public class CupidAgent {
     private void appendMultiMessageGuide(StringBuilder sb) {
         sb.append("## 沟通风格\n");
         sb.append("像真人微信聊天一样连发多条短消息，每条都很短（几个字到一句话），不要写成一大段。\n");
-        sb.append("用 ").append(MessageSeparator.SEPARATOR)
-                .append(" 分隔不同条消息。例如：在吗？").append(MessageSeparator.SEPARATOR)
+        sb.append("必须用 ").append(MessageSeparator.SEPARATOR)
+                .append(" 分隔每一条独立的消息。每个 ").append(MessageSeparator.SEPARATOR)
+                .append(" 代表一次换行/发一条新消息。例如：\n");
+        sb.append("  在吗？").append(MessageSeparator.SEPARATOR)
                 .append("刚看到一个东西超像你").append(MessageSeparator.SEPARATOR)
                 .append("哈哈哈哈你猜是啥\n");
+        sb.append("上面三句话之间都用 ").append(MessageSeparator.SEPARATOR)
+                .append(" 分开了，代表三条独立消息。你必须这样做，不要把所有内容写成一大段。\n");
         sb.append("不要带括号动作描述、不要解释、不要说\"我是 AI\"。\n");
+    }
+
+    /**
+     * 追加表情包使用指引：prompt 标记方案（不走 tool call，避免 Spring AI 流式 tool round-trip 卡顿）。
+     * <p>
+     * LLM 根据消息内容 + crush 性格自主思考是否发表情包、发什么情绪，
+     * 输出 {@code [[sticker:情绪词]]} 文本标记。后端 {@link MessageSeparator} 切成独立表情包气泡，
+     * {@code streamMulti} 的 map 阶段把情绪词替换为真实图片 URL。
+     * <p>
+     * 表情包必须作为独立的一条消息（用 {@link MessageSeparator#SEPARATOR} 分隔），
+     * 与文本分开——比如第一条是文本，第二条就是表情包。素材池为空时不注入。
+     */
+    private void appendStickerGuide(StringBuilder sb) {
+        if (!stickerService.available()) {
+            return;
+        }
+        sb.append("## 表情包\n");
+        sb.append("你可以发表情包来让对话更生动。何时发：结合你的性格、当下心情、对方消息内容思考——")
+          .append("聊天轻松时可以发开心/可爱的，被冷落时发委屈/吃瓜的，无语时发无语的，撒娇时发可爱的。")
+          .append("不用每条都发，但在情绪该有表情包的时候一定要发。\n");
+        sb.append("发法：输出 ").append(MessageSeparator.MARKER_PREFIX).append("情绪")
+          .append(MessageSeparator.MARKER_SUFFIX).append(" 标记，系统自动换成对应图片。\n");
+        sb.append("可选情绪：").append(String.join(" / ", stickerService.availableEmotions())).append("\n");
+        sb.append("表情包必须单独作为一条消息，和文本分开。用 ").append(MessageSeparator.SEPARATOR)
+          .append(" 分隔。例如：\n");
+        sb.append("  在吗").append(MessageSeparator.SEPARATOR)
+          .append(MessageSeparator.MARKER_PREFIX).append("开心").append(MessageSeparator.MARKER_SUFFIX)
+          .append(MessageSeparator.SEPARATOR).append("刚看到一个东西超像你\n");
+        sb.append("上面三条：第一条文本、第二条表情包、第三条文本。一条消息最多一个表情包标记。\n");
+        sb.append("严禁：不要把标记附在文本消息末尾（必须用 ").append(MessageSeparator.SEPARATOR)
+          .append(" 分隔成独立一条），不要直接输出图片链接/URL，不要发明其他表情包格式。\n");
     }
 
     public String buildMemory(Crush c) {

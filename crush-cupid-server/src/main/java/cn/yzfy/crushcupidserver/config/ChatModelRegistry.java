@@ -127,11 +127,41 @@ public class ChatModelRegistry {
     }
 
     /**
+     * 返回一个可用的多模态供应商代号，优先 [qwen-vl]（视觉专用），其次 [qwen-native]
+     * （通义全家桶含视觉/音频），再其它声明 multimodal=true 的供应商。没有则返回 null。
+     */
+    public String firstMultimodal() {
+        String preferred = null;
+        String nativeOr = null;
+        for (Map.Entry<String, LlmProperties.ProviderConfig> e : configs.entrySet()) {
+            if (!e.getValue().isMultimodal()) {
+                continue;
+            }
+            if ("qwen-vl".equals(e.getKey())) {
+                return e.getKey();
+            }
+            if (preferred == null) {
+                preferred = e.getKey();
+            }
+            if (QWEN_NATIVE.equals(e.getKey())) {
+                nativeOr = e.getKey();
+            }
+        }
+        return nativeOr != null ? nativeOr : preferred;
+    }
+
+    /**
      * 构造单个 OpenAI 兼容协议的 ChatModel。
      */
     private ChatModel buildModel(LlmProperties.ProviderConfig cfg) {
+        // 归一化 base-url：Spring AI 会在 baseUrl 后追加固定的 /v1/chat/completions，
+        // 若配置里已含结尾的 /v1 会导致重复（如 dashscope 的 compatible-mode/v1 → /v1/v1/chat/completions 404）。
+        String base = cfg.getBaseUrl();
+        if (StrUtil.isNotBlank(base) && base.endsWith("/v1")) {
+            base = base.substring(0, base.length() - 3);
+        }
         OpenAiApi api = OpenAiApi.builder()
-                .baseUrl(cfg.getBaseUrl())
+                .baseUrl(base)
                 .apiKey(cfg.getApiKey())
                 .build();
 

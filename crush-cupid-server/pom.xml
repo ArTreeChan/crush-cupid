@@ -114,6 +114,22 @@
         </dependency>
 
         <!--
+          文档解析：对话消息附件（FILE_BASE64）的内容抽取。
+          pdfbox 解析 pdf；poi-ooxml 解析 docx（传递引入 poi 核心）。
+          纯文本文件（txt/md/csv 等）仍走 TextExtractor，不依赖这两者。
+        -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+
+        <!--
           MCP Client：文件上传图片时通过阿里云百炼 MCP（streamableHttp）调用通用 OCR 识别文字。
           版本随 spring-ai-bom 1.1.2 管理；autoconfig 关闭（spring.ai.mcp.client.enabled=false），
           由 OcrService 手动构建 McpSyncClient，未配置 OCR 时零开销。

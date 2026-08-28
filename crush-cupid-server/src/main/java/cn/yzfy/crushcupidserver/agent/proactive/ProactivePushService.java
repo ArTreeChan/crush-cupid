@@ -7,7 +7,6 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -22,7 +21,7 @@ import java.util.concurrent.Executor;
  * 阻塞治理：每个连接的 {@code emitter.send}（同步 socket 写）单独投递到虚拟线程 {@code pushExecutor} 上执行，
  * 一个慢/卡住的连接不会阻塞广播到其它连接，也不会占用调度线程。
  *
- * @author crush-cupid
+ * @author 一朝风月
  * @code service
  * @createTime 2026-08-27
  */
@@ -65,16 +64,9 @@ public class ProactivePushService {
             return;
         }
         for (SseEmitter emitter : set) {
-            pushExecutor.execute(() -> {
-                try {
-                    emitter.send(SseEmitter.event()
-                            .name(ProactiveProperties.EVENT_TYPE)
-                            .data(payload, MediaType.TEXT_PLAIN));
-                } catch (IOException | IllegalStateException e) {
-                    log.debug("推送主动消息失败 crush={} err={}", crushSlug, e.getMessage());
-                    remove(crushSlug, emitter);
-                }
-            });
+            safeSend(crushSlug, emitter, SseEmitter.event()
+                    .name(ProactiveProperties.EVENT_TYPE)
+                    .data(payload, MediaType.TEXT_PLAIN));
         }
     }
 
@@ -82,13 +74,26 @@ public class ProactivePushService {
     public void heartbeatAll() {
         listeners.forEach((slug, set) -> {
             for (SseEmitter emitter : set) {
-                pushExecutor.execute(() -> {
-                    try {
-                        emitter.send(SseEmitter.event().comment("ping"));
-                    } catch (IOException | IllegalStateException e) {
-                        remove(slug, emitter);
-                    }
-                });
+                safeSend(slug, emitter, SseEmitter.event().comment("ping"));
+            }
+        });
+    }
+
+    /**
+     * 单连接安全推送：send 失败（客户端刷新/关页/断网导致的死连接、响应已完成等）
+     * 一律降为 debug 日志并立即移除死连接，避免「你的主机中的软件中止了一个已建立的连接」
+     * 类 IOException 以未捕获异常/ERROR 刷屏——断连是 SSE 长连接的常态而非故障。
+     * <p>
+     * catch {@link Exception} 兜底而非仅 IOException/IllegalStateException：
+     * 保证任何异常形态都不会穿透到虚拟线程的未捕获处理器。
+     */
+    private void safeSend(String crushSlug, SseEmitter emitter, SseEmitter.SseEventBuilder event) {
+        pushExecutor.execute(() -> {
+            try {
+                emitter.send(event);
+            } catch (Exception e) {
+                log.debug("SSE 推送失败（移除失效连接） crush={} err={}", crushSlug, e.getMessage());
+                remove(crushSlug, emitter);
             }
         });
     }

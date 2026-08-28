@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.CrushBuildService;
 import cn.yzfy.crushcupidserver.agent.OcrService;
 import cn.yzfy.crushcupidserver.common.Result;
+import cn.yzfy.crushcupidserver.common.TextExtractor;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.dto.SourceImportDTO;
 import cn.yzfy.crushcupidserver.model.entity.ChatSource;
@@ -17,6 +18,7 @@ import cn.yzfy.crushcupidserver.model.vo.SourceVO;
 import cn.yzfy.crushcupidserver.model.vo.VersionVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -39,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 /**
  * crush 生命周期子资源：原材料导入（文本 / 文件）、构建、版本历史。
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/crush/{crushId}")
 @RequiredArgsConstructor
@@ -61,7 +64,7 @@ public class CrushSourceController {
         source.setCrushId(crushId);
         source.setFileType(dto.getType() == null ? SourceType.TEXT.name() : dto.getType().name());
         source.setFileName(dto.getFileName());
-        source.setContent(sanitize(dto.getContent()));
+        source.setContent(TextExtractor.sanitize(dto.getContent()));
         source.setMessageCount(0);
         source.setCreatedAt(new Date());
         chatSourceService.save(source);
@@ -142,17 +145,48 @@ public class CrushSourceController {
     public SseEmitter build(@PathVariable Long crushId) {
         requireCrush(crushId);
         SseEmitter emitter = new SseEmitter(300_000L);
-        // 后台线程执行，避免阻塞请求线程；通过 SSE 推进度 + 最终结果
-        CompletableFuture.runAsync(() -> {
+        // 防重复 complete/回调导致的 SseEmitter 二次发送异常
+        java.util.concurrent.atomic.AtomicBoolean finished = new java.util.concurrent.atomic.AtomicBoolean(false);
+        Runnable finish = () -> {
+            if (finished.compareAndSet(false, true)) {
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    // 已关闭
+                }
+            }
+        };
+        emitter.onCompletion(finish);
+        emitter.onTimeout(() -> {
+            log.warn("构建 SSE 客户端超时，释放连接 crushId={}", crushId);
+            finish.run();
+        });
+        emitter.onError(e -> {
+            log.warn("构建 SSE 客户端异常，释放连接 crushId={} err={}", crushId, e.getMessage());
+            finish.run();
+        });
+
+        // 后台线程执行，避免阻塞请求线程；通过 SSE 推进度 + 最终结果。
+        CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
             try {
                 BuildResultVO result = crushBuildService.build(crushId, msg -> sendEvent(emitter, progress(msg)));
                 sendEvent(emitter, done(result));
-                emitter.complete();
+                finish.run();
             } catch (Exception e) {
                 sendEvent(emitter, error(e.getMessage() == null ? "构建失败" : e.getMessage()));
-                emitter.complete();
+                finish.run();
             }
         });
+        // 兜底超时：后台构建超过 300s 也主动释放连接，避免客户端永久挂起。
+        task.orTimeout(300_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> {
+                    if (!finished.get()) {
+                        log.warn("构建耗时超过 300s，中断 SSE crushId={} err={}", crushId, ex.getMessage());
+                        sendEvent(emitter, error("构建超时"));
+                        finish.run();
+                    }
+                    return null;
+                });
         return emitter;
     }
 
@@ -198,43 +232,10 @@ public class CrushSourceController {
     }
 
     /**
-     * 读取文件内容：按 BOM 检测编码（UTF-8 / UTF-16LE / UTF-16BE），并清洗 NUL 字节。
+     * 读取文件内容：委托 {@link TextExtractor} 按 BOM 检测编码并清洗 NUL 字节。
      */
     private String readFileContent(MultipartFile file) throws IOException {
-        byte[] bytes = file.getBytes();
-        String content;
-        if (startsWith(bytes, 0xFF, 0xFE)) {
-            content = new String(bytes, 2, bytes.length - 2, StandardCharsets.UTF_16LE);
-        } else if (startsWith(bytes, 0xFE, 0xFF)) {
-            content = new String(bytes, 2, bytes.length - 2, StandardCharsets.UTF_16BE);
-        } else if (startsWith(bytes, 0xEF, 0xBB, 0xBF)) {
-            content = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
-        } else {
-            content = new String(bytes, StandardCharsets.UTF_8);
-        }
-        return sanitize(content);
-    }
-
-    private boolean startsWith(byte[] bytes, int... prefix) {
-        if (bytes.length < prefix.length) {
-            return false;
-        }
-        for (int i = 0; i < prefix.length; i++) {
-            if ((bytes[i] & 0xFF) != prefix[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * 移除 NUL 字符（0x00），PostgreSQL 的 TEXT 列不支持存储 NUL。
-     */
-    private String sanitize(String s) {
-        if (s == null) {
-            return null;
-        }
-        return s.replace(String.valueOf((char) 0), "");
+        return TextExtractor.extract(file.getBytes());
     }
 
     private void sendEvent(SseEmitter emitter, BuildEventVO event) {

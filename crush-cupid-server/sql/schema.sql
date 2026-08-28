@@ -79,6 +79,23 @@ CREATE TABLE IF NOT EXISTS conversation (
 CREATE INDEX IF NOT EXISTS idx_conversation_crush ON conversation(crush_id, created_at);
 
 -- ============================================
+-- 3.1 chat_media — 对话图片/媒体 URL 独立存储
+-- ============================================
+-- 独立于 conversation 表，不设 FK 到 conversation(id)，
+-- 因为 PgChatMemoryRepository.saveAll 采用「先清空再批量插入」覆盖语义，
+-- FK 级联删除会导致图片记录丢失。改为按 crush_id + created_at 独立管理。
+CREATE TABLE IF NOT EXISTS chat_media (
+    id          BIGSERIAL PRIMARY KEY,
+    crush_id    BIGINT NOT NULL REFERENCES crush(id) ON DELETE CASCADE,
+    role        VARCHAR(20) NOT NULL DEFAULT 'user',
+    media_url   TEXT NOT NULL,
+    media_type  VARCHAR(50) DEFAULT 'image',
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_media_crush ON chat_media(crush_id, created_at);
+
+-- ============================================
 -- 4. crush_version — 版本快照
 -- ============================================
 CREATE TABLE IF NOT EXISTS crush_version (

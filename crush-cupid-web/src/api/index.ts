@@ -2,6 +2,7 @@ import http from './http'
 import type {
   BuildEvent,
   ChatHistoryVO,
+  ChatMedia,
   Crush,
   CrushCreatePayload,
   MultiChunk,
@@ -48,17 +49,19 @@ export async function getSkillPrompt(name: string): Promise<string> {
 }
 
 /**
- * 流式对话（SSE，POST）。后端每个 chunk 以 {index,content,done} JSON 编码在 data 行；
- * 前端按 index 切气泡，支持 crush 一次连发多条短消息。
+ * 流式对话（SSE，POST）。后端每个 chunk 以 {index,type,content,done} JSON 编码在 data 行；
+ * 前端按 index 切气泡，支持 crush 一次连发多条短消息 + 表情包气泡。
+ * media 可选：图片（IMAGE_BASE64，多模态供应商视觉理解 / 非多模态 OCR 兜底）或文本附件（FILE_BASE64）。
  */
 export async function streamChat(
   crushSlug: string,
   message: string,
   onChunk: (chunk: MultiChunk) => void,
+  media?: ChatMedia[],
 ): Promise<void> {
   await sseStream(
     '/api/chat',
-    { crushSlug, message },
+    { crushSlug, message, media: media && media.length ? media : undefined },
     onChunk,
   )
 }

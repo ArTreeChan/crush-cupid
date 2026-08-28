@@ -69,16 +69,23 @@ public class VoiceService {
             log.warn("DASHSCOPE_API_KEY 未配置，语音合成能力不可用");
             return;
         }
-        this.audioApi = DashScopeAudioSpeechApi.builder()
-                .baseUrl(BASE_URL)
-                .websocketUrl(WEBSOCKET_URL)
-                .apiKey(new SimpleApiKey(apiKey))
-                .build();
-        this.designClient = RestClient.builder()
-                .baseUrl(VOICE_DESIGN_URL)
-                .defaultHeader("Authorization", "Bearer " + apiKey)
-                .build();
-        log.info("CosyVoice 语音合成就绪：model={}，默认音色={}", defaultModel, StrUtil.blankToDefault(defaultVoice, "未配置"));
+        try {
+            this.audioApi = DashScopeAudioSpeechApi.builder()
+                    .baseUrl(BASE_URL)
+                    .websocketUrl(WEBSOCKET_URL)
+                    .apiKey(new SimpleApiKey(apiKey))
+                    .build();
+            this.designClient = RestClient.builder()
+                    .baseUrl(VOICE_DESIGN_URL)
+                    .defaultHeader("Authorization", "Bearer " + apiKey)
+                    .build();
+            log.info("CosyVoice 语音合成就绪：model={}，默认音色={}", defaultModel, StrUtil.blankToDefault(defaultVoice, "未配置"));
+        } catch (Exception e) {
+            // 初始化失败不阻塞应用启动，降级为不可用，运行时走设计好的降级分支
+            this.audioApi = null;
+            this.designClient = null;
+            log.warn("CosyVoice 语音初始化失败，语音能力降级不可用：{}", e.getMessage());
+        }
     }
 
     /**

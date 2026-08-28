@@ -1,30 +1,44 @@
 package cn.yzfy.crushcupidserver.controller;
 
 import cn.yzfy.crushcupidserver.agent.CupidAgent;
+import cn.yzfy.crushcupidserver.config.ThreadPoolsConfig;
+import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.dto.ChatRequestDTO;
 import cn.yzfy.crushcupidserver.model.dto.ProactiveRequestDTO;
 import cn.yzfy.crushcupidserver.model.vo.MultiChunkVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 
-import java.util.concurrent.CompletableFuture;
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * @className ChatController
  * @description 对话接口（SSE 流式）。每个 chunk 以 {@link MultiChunkVO} JSON 编码下发到 data 行；
  * 前端按 index 切气泡，支持 crush 一次连发多条短消息。
  * <p>
- * 异步处理：用 {@link CompletableFuture} 在后台线程订阅 Flux，请求线程立即返回 {@link SseEmitter}，
- * 不阻塞 Servlet 容器线程；同时记录 TTFB（首字节时间）与总耗时便于定位慢调用。
+ * 安全治理：
+ * <ul>
+ *   <li><b>信号量限流</b>：并发 SSE 流上限 {@value ThreadPoolsConfig#SSE_MAX_CONCURRENT}，超过返回 503 快速失败</li>
+ *   <li><b>Flux 超时</b>：LLM {@value ThreadPoolsConfig#LLM_TIMEOUT} 无响应自动取消，释放虚拟线程与连接</li>
+ *   <li><b>订阅取消</b>：emitter 关闭（客户端断开/超时/完成）时立即 dispose Flux 订阅，防资源泄漏</li>
+ *   <li><b>信号量防重复释放</b>：AtomicBoolean 保证 emitter 生命周期回调只释放一次</li>
+ * </ul>
+ *
  * @author crush-cupid
  * @code controller
  * @createTime 2026-08-26
@@ -32,11 +46,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @RestController
 @RequestMapping("/api/chat")
-@RequiredArgsConstructor
 public class ChatController {
 
     private final CupidAgent cupidAgent;
     private final ObjectMapper objectMapper;
+    private final ExecutorService sseExecutor;
+    private final Semaphore sseLimiter;
+    private final AtomicInteger activeStreams = new AtomicInteger(0);
+
+    public ChatController(CupidAgent cupidAgent,
+                          ObjectMapper objectMapper,
+                          @Qualifier("sseExecutor") ExecutorService sseExecutor,
+                          @Qualifier("sseLimiter") Semaphore sseLimiter) {
+        this.cupidAgent = cupidAgent;
+        this.objectMapper = objectMapper;
+        this.sseExecutor = sseExecutor;
+        this.sseLimiter = sseLimiter;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        sseExecutor.shutdown();
+    }
 
     /**
      * 用户主动对话（流式多条消息）。
@@ -55,47 +86,88 @@ public class ChatController {
     }
 
     /**
-     * 把 MultiChunkVO 流接入 SseEmitter。
+     * 把 MultiChunkVO 流接入 SseEmitter，全生命周期安全治理。
      * <p>
-     * 用 CompletableFuture 异步订阅，请求线程立即返回 emitter；记录首字节 TTFB 与总耗时。
+     * 请求线程：tryAcquire 信号量 → 创建 emitter → 注册回调 → 异步订阅 → 立即返回。
+     * 订阅线程（虚拟）：消费 Flux → emitter.send → 完成/超时/异常时回调 → 释放信号量 + 取消订阅。
      */
     private SseEmitter stream(Flux<MultiChunkVO> flux, String tag) {
-        long start = System.currentTimeMillis();
-        SseEmitter emitter = new SseEmitter(300_000L);
-        AtomicBoolean firstSent = new AtomicBoolean(false);
+        // 1. 信号量限流：超过并发上限立即拒绝，不排队
+        if (!sseLimiter.tryAcquire()) {
+            log.warn("SSE [{}] 并发超限({})，拒绝请求", tag, ThreadPoolsConfig.SSE_MAX_CONCURRENT);
+            throw BizException.badRequest("系统繁忙，请稍后重试");
+        }
 
-        CompletableFuture.runAsync(() -> flux
-                .onBackpressureBuffer(1024)
-                .doOnNext(c -> {
-                    // 首 chunk 到达，记录 TTFB（用户从请求到看到第一个字的耗时）
-                    if (firstSent.compareAndSet(false, true)) {
-                        log.info("SSE [{}] 首字节 TTFB={}ms", tag, System.currentTimeMillis() - start);
-                    }
-                })
-                .doOnComplete(() -> {
-                    log.info("SSE [{}] 完成，总耗时={}ms", tag, System.currentTimeMillis() - start);
-                    emitter.complete();
-                })
-                .doOnError(e -> {
-                    log.error("SSE [{}] 异常，总耗时={}ms", tag, System.currentTimeMillis() - start, e);
-                    emitter.completeWithError(e);
-                })
-                .subscribe(
-                        chunk -> {
-                            try {
-                                emitter.send(SseEmitter.event()
-                                        .data(objectMapper.writeValueAsString(chunk)));
-                            } catch (Exception e) {
-                                log.error("SSE [{}] send 失败，总耗时={}ms err={}", tag, System.currentTimeMillis() - start, e.getMessage());
-                                emitter.completeWithError(e);
+        long start = System.currentTimeMillis();
+        SseEmitter emitter = new SseEmitter(ThreadPoolsConfig.SSE_TIMEOUT);
+        AtomicBoolean firstSent = new AtomicBoolean(false);
+        AtomicBoolean released = new AtomicBoolean(false);
+        AtomicReference<Disposable> subRef = new AtomicReference<>();
+        int concurrency = activeStreams.incrementAndGet();
+
+        if (concurrency > 100) {
+            log.warn("SSE 并发较高：{} 个活跃流", concurrency);
+        }
+
+        // 2. emitter 生命周期回调：任一回调触发时释放信号量 + 取消订阅（AtomicBoolean 防重复）
+        Runnable cleanup = () -> {
+            if (released.compareAndSet(false, true)) {
+                activeStreams.decrementAndGet();
+                sseLimiter.release();
+                Disposable d = subRef.get();
+                if (d != null && !d.isDisposed()) {
+                    d.dispose();
+                }
+            }
+        };
+        emitter.onCompletion(cleanup::run);
+        emitter.onTimeout(cleanup::run);
+        emitter.onError(e -> {
+            log.warn("SSE [{}] emitter onError: {}", tag, e.getMessage());
+            cleanup.run();
+        });
+
+        // 3. 异步订阅：虚拟线程池执行，请求线程立即返回 emitter
+        sseExecutor.execute(() -> {
+            try {
+                flux
+                        // LLM 超时保护：5 分钟无响应自动 onError，释放虚拟线程与连接
+                        .timeout(ThreadPoolsConfig.LLM_TIMEOUT)
+                        .onBackpressureBuffer(ThreadPoolsConfig.BACKPRESSURE_BUFFER)
+                        .doOnSubscribe(s -> log.info("SSE [{}] Flux 订阅开始，当前并发={}", tag, concurrency))
+                        .doOnNext(c -> {
+                            if (firstSent.compareAndSet(false, true)) {
+                                log.info("SSE [{}] 首字节 TTFB={}ms", tag, System.currentTimeMillis() - start);
                             }
-                        },
-                        emitter::completeWithError
-                )
-        ).exceptionally(ex -> {
-            log.error("SSE [{}] 订阅编排异常，总耗时={}ms", tag, System.currentTimeMillis() - start, ex);
-            emitter.completeWithError(ex);
-            return null;
+                        })
+                        .doOnComplete(() -> {
+                            log.info("SSE [{}] 完成，总耗时={}ms", tag, System.currentTimeMillis() - start);
+                            emitter.complete();
+                        })
+                        .doOnError(e -> {
+                            log.error("SSE [{}] 异常，总耗时={}ms err={}", tag, System.currentTimeMillis() - start, e.getMessage());
+                            emitter.completeWithError(e);
+                        })
+                        .doFinally(sig -> {
+                            log.info("SSE [{}] Flux 终止 signal={} 总耗时={}ms", tag, sig, System.currentTimeMillis() - start);
+                        })
+                        .subscribe(
+                                chunk -> {
+                                    try {
+                                        emitter.send(SseEmitter.event()
+                                                .data(objectMapper.writeValueAsString(chunk)));
+                                    } catch (Exception e) {
+                                        log.error("SSE [{}] send 失败，总耗时={}ms err={}", tag, System.currentTimeMillis() - start, e.getMessage());
+                                        emitter.completeWithError(e);
+                                    }
+                                },
+                                emitter::completeWithError
+                        );
+            } catch (Exception e) {
+                log.error("SSE [{}] 订阅编排异常，总耗时={}ms", tag, System.currentTimeMillis() - start, e);
+                emitter.completeWithError(e);
+                cleanup.run();
+            }
         });
 
         return emitter;

@@ -1,5 +1,6 @@
 package cn.yzfy.crushcupidserver.config;
 
+import cn.yzfy.crushcupidserver.agent.StickerSanitizer;
 import cn.yzfy.crushcupidserver.model.entity.Conversation;
 import cn.yzfy.crushcupidserver.model.service.ConversationService;
 import cn.yzfy.crushcupidserver.model.service.CrushService;
@@ -70,6 +71,22 @@ public class PgChatMemoryRepository implements ChatMemoryRepository {
                 messages.add(msg);
             }
         }
+        // 历史注入 prompt 前清洗 assistant 侧表情包痕迹：
+        // 把 [[sticker:URL]] / [表情包] / 裸 URL 替换为占位文本，防止 LLM 看到后模仿输出。
+        // 写入侧不清洗——原样存 [[sticker:URL]]，保留 URL 供前端历史回显。
+        for (int i = 0; i < messages.size(); i++) {
+            Message m = messages.get(i);
+            if (m instanceof AssistantMessage am) {
+                String cleaned = StickerSanitizer.sanitize(am.getText());
+                // 额外清洗存量脏数据里的 [表情包]（单括号，旧占位格式）和 (此处发表了一个表情包)
+                if (cleaned != null) {
+                    cleaned = cleaned.replace("[表情包]", StickerSanitizer.PLACEHOLDER);
+                }
+                if (cleaned != null && !cleaned.equals(am.getText())) {
+                    messages.set(i, new AssistantMessage(cleaned));
+                }
+            }
+        }
         return messages;
     }
 
@@ -93,6 +110,8 @@ public class PgChatMemoryRepository implements ChatMemoryRepository {
             Conversation row = new Conversation();
             row.setCrushId(crushId);
             row.setRole(roleCode(msg.getMessageType()));
+            // 写入侧不清洗：原样存 [[sticker:URL]]，保留 URL 供前端历史回显。
+            // 读取侧（findByConversationId）注入 prompt 前清洗，防止 LLM 模仿 URL。
             row.setContent(msg.getText());
             row.setCreatedAt(now);
             rows.add(row);

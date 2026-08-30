@@ -2,10 +2,11 @@ package cn.yzfy.crushcupidserver.agent;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.IdUtil;
+import cn.yzfy.crushcupidserver.config.UploadProperties;
 import cn.yzfy.crushcupidserver.model.dto.ChatMedia;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -26,15 +27,12 @@ import java.time.format.DateTimeFormatter;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ImageStorageService {
 
     private static final DateTimeFormatter DATE_DIR = DateTimeFormatter.ofPattern("yyyyMMdd");
 
-    @Value("${crush.upload.dir:./uploads}")
-    private String uploadDir;
-
-    @Value("${crush.upload.url-prefix:/api/uploads}")
-    private String uploadUrlPrefix;
+    private final UploadProperties uploadProperties;
 
     /**
      * 启动时确保落盘目录存在，并打印实际绝对路径——便于排查「图片回显 404」类问题
@@ -42,14 +40,14 @@ public class ImageStorageService {
      */
     @PostConstruct
     public void init() {
-        File dir = new File(uploadDir);
+        File dir = new File(uploadProperties.getDir());
         if (!dir.exists()) {
             FileUtil.mkdir(dir);
         }
         log.info("图片上传落盘目录：{}（绝对路径={}）URL 前缀={}",
-                uploadDir,
+                uploadProperties.getDir(),
                 FileUtil.getAbsolutePath(dir),
-                uploadUrlPrefix);
+                uploadProperties.getUrlPrefix());
     }
 
     /**
@@ -69,10 +67,10 @@ public class ImageStorageService {
         String dateDir = LocalDate.now().format(DATE_DIR);
         String fileName = IdUtil.fastSimpleUUID() + ext;
         String relative = dateDir + File.separator + fileName;
-        File target = FileUtil.file(uploadDir, relative);
+        File target = FileUtil.file(uploadProperties.getDir(), relative);
         FileUtil.mkParentDirs(target);
         FileUtil.writeBytes(bytes, target);
-        return slashUrl(uploadUrlPrefix, dateDir, fileName);
+        return slashUrl(uploadProperties.getUrlPrefix(), dateDir, fileName);
     }
 
     /** mimeType -> 文件扩展名（含点） */

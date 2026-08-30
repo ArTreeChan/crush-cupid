@@ -43,38 +43,8 @@
 
 ---
 
-## 架构
-
-```
-                    ┌─────────────────────────────────────────────────────┐
-   Vue3 + Antd       │                  crush-cupid-server                 │
-   (SSE 流式)  ─────▶│  controller ──▶ CupidAgent(Facade)                  │
-                    │                   ├── ChatClientProvider             │
-                    │                   │     └─ 路由 deepseek/qwen/openai │
-                    │                   │        /qwen-native(Alibaba)     │
-                    │                   ├── Advisors                       │
-                    │                   │     ├─ SafetyAdvisor              │
-                    │                   │     ├─ PersonaAdvisor             │
-                    │                   │     └─ MessageChatMemoryAdvisor  │
-                    │                   ├── Tools (@Tool)                  │
-                    │                   ├── MessageSeparator (多条切分)     │
-                    │                   ├── StickerService (表情包)        │
-                    │                   │     └─ ChineseBQB manifest       │
-                    │                   │        + jsdelivr CDN 加速       │
-                    │                   ├── ImageStorageService (图片持久化)│
-                    │                   │     └─ chat_media 表            │
-                    │                   └── PgChatMemoryRepository          │
-                    │                         │ (基于 conversation 表)     │
-                    │  VoiceService ── DashScopeAudioSpeechApi(WebSocket) ──▶ mp3 │
-                    │  OcrService ── McpSyncClient ──▶ 百炼通用OCR          │
-                    │  ProactivePushService ── SSE 心跳推送                  │
-                    │  ThreadPoolsConfig ── 虚拟线程池 + 信号量限流           │
-                    │  skill/ ── GitHubRawSkillClient ──▶ GitHub raw       │
-                    │        └─ CachingSkillResourceClient(TTL)             │
-                    │  PostgreSQL  ◀── MyBatis-Plus                        │
-                    │    conversation 表 + chat_media 表                    │
-                    └─────────────────────────────────────────────────────┘
-```
+## 演示
+ ![img.png](img.png)
 
 **核心链路**：`SkillResourceClient`（Adapter）从 GitHub raw 拉取 `SKILL.md` + `prompts/*.md`，`CachingSkillResourceClient`（Decorator）加 TTL 缓存；`CupidAgent`（Facade）按 `provider` 路由到对应 `ChatClient`，编排 advisor + tool + memory，输出经 `MessageSeparator` 切成多条消息流式回传；`PgChatMemoryRepository` 把对话历史落库 PG；图片 URL 独立存 `chat_media` 表，表情包走 `[[sticker:情绪]]` prompt 标记方案绕开 Spring AI 流式 tool call 不稳定。
 

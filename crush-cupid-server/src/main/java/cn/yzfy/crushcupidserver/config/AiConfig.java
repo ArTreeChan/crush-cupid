@@ -9,6 +9,7 @@ import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /**
  * @className AiConfig
@@ -38,11 +39,21 @@ public class AiConfig {
     }
 
     /**
-     * 基于会话记忆的 advisor，注入所有 ChatClient。
+     * 基于会话记忆的 advisor，注入所有 ChatClient。@Primary 保证按类型注入唯一取到 PG 版。
      */
     @Bean
+    @Primary
     public MessageChatMemoryAdvisor messageChatMemoryAdvisor(ChatMemory chatMemory) {
         return MessageChatMemoryAdvisor.builder(chatMemory).build();
+    }
+
+    /**
+     * 军师对话的独立内存记忆：不落库（不污染 conversation 表与模拟对话历史），
+     * 仅在服务运行期内按 crush 保持军师会话的上下文连贯。
+     */
+    @Bean
+    public MessageWindowChatMemory advisorChatMemory() {
+        return MessageWindowChatMemory.builder().maxMessages(40).build();
     }
 
     // SafetyAdvisor / CrushTools 已用 @Component / @Service 自注册，无需在此重复声明。

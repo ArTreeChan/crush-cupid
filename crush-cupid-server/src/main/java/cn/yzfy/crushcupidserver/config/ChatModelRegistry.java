@@ -2,6 +2,9 @@ package cn.yzfy.crushcupidserver.config;
 
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.exception.BizException;
+import cn.yzfy.crushcupidserver.model.entity.AiProvider;
+import cn.yzfy.crushcupidserver.model.converter.AiProviderConverter;
+import cn.yzfy.crushcupidserver.model.service.AiProviderService;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import jakarta.annotation.PostConstruct;
 import lombok.Getter;
@@ -15,17 +18,20 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * @className ChatModelRegistry
- * @description LLM 供应商注册中心。启动时按 {@link LlmProperties} 为每个供应商构造一个
- * {@link OpenAiChatModel}（统一走 OpenAI 兼容协议），并暴露按 key 路由的能力。
+ * @description LLM 供应商注册中心。启动时合并两类来源并动态注册 OpenAI 兼容 ChatModel：
+ * <ul>
+ *   <li><b>系统供应商</b>：来自 {@link LlmProperties}（crush.ai.providers，YAML 只读）；</li>
+ *   <li><b>自定义供应商</b>：来自 {@link AiProvider} 表（运行时增删改查，无需改配置/重启）。</li>
+ * </ul>
+ * 变更后调用 {@link #reload()} 即时生效；同一 key 下自定义供应商覆盖系统供应商。
+ * 业务侧按 key 路由，零额外依赖（DeepSeek / 通义 / OpenAI 均走 OpenAI 兼容协议）。
  * <p>
- * 设计要点：
- * 1. 所有供应商（DeepSeek / 通义千问 / OpenAI）均使用 OpenAI 兼容协议，零额外依赖；
- * 2. 每个供应商独立的 apiKey/baseUrl/model/temperature，互不影响；
- * 3. 业务侧不再直接依赖单一 ChatModel Bean，而是通过本 Registry 路由。
+ * 默认供应商解析：优先选择标记 {@code is_default} 的自定义供应商，否则回退 YAML 的 default-provider。
  * @author 一朝风月
  * @code registry
  * @createTime 2026-08-26
@@ -36,6 +42,7 @@ import java.util.Map;
 public class ChatModelRegistry {
 
     private final LlmProperties llmProperties;
+    private final AiProviderService aiProviderService;
 
     /**
      * Alibaba DashScope 原生 ChatModel（由 spring-ai-alibaba-starter-dashscope 自动配置注册）。
@@ -50,50 +57,83 @@ public class ChatModelRegistry {
     @Getter
     private final Map<String, ChatModel> models = new LinkedHashMap<>();
 
-    /** 供应商代号 -> 供应商配置（供业务侧查询是否多模态等元信息） */
+    /** 供应商代号 -> 供应商配置（供业务侧查询能力等元信息） */
     @Getter
     private final Map<String, LlmProperties.ProviderConfig> configs = new LinkedHashMap<>();
 
-    /**
-     * 启动时为每个供应商构造 {@link OpenAiChatModel}。
-     * 跳过缺 apiKey 的供应商，避免硬启动失败。
-     */
+    /** 运行期默认供应商代号（DB is_default 优先，否则 YAML default-provider） */
+    @Getter
+    private String defaultKey;
+
     @PostConstruct
     public void init() {
-        if (llmProperties.getProviders() == null || llmProperties.getProviders().isEmpty()) {
-            log.warn("crush.ai.providers 未配置任何 LLM 供应商，LLM 调用将不可用");
-            return;
+        reload();
+    }
+
+    /**
+     * 重建供应商注册表：系统 YAML + 自定义 DB 合并，并重算默认供应商。
+     * 供 {@link cn.yzfy.crushcupidserver.controller.AiProviderController} 在增删改后调用以即时生效。
+     */
+    public synchronized void reload() {
+        models.clear();
+        configs.clear();
+
+        // 1. 系统供应商（YAML，只读）
+        if (llmProperties.getProviders() != null) {
+            llmProperties.getProviders().forEach((key, cfg) -> {
+                if (StrUtil.isBlank(cfg.getApiKey())) {
+                    log.warn("系统供应商 [{}] 未配置 apiKey，跳过注册", key);
+                    return;
+                }
+                models.put(key, buildModel(cfg));
+                configs.put(key, cfg);
+                log.info("注册系统 LLM 供应商 [{}] -> model={}, baseUrl={}, vision={}, audio={}",
+                        key, cfg.getModel(), cfg.getBaseUrl(), cfg.isVision(), cfg.isAudio());
+            });
         }
-        llmProperties.getProviders().forEach((key, cfg) -> {
-            if (StrUtil.isBlank(cfg.getApiKey())) {
-                log.warn("供应商 [{}] 未配置 apiKey，跳过注册", key);
-                return;
+
+        // 2. 自定义供应商（DB，动态）：同一 key 覆盖系统供应商
+        List<AiProvider> dbProviders = aiProviderService.list();
+        boolean hasDbDefault = false;
+        for (AiProvider p : dbProviders) {
+            LlmProperties.ProviderConfig cfg = toProviderConfig(p);
+            models.put(p.getProviderKey(), buildModel(cfg));
+            configs.put(p.getProviderKey(), cfg);
+            log.info("注册自定义 LLM 供应商 [{}] -> model={}, baseUrl={}, vision={}, audio={}, default={}",
+                    p.getProviderKey(), cfg.getModel(), cfg.getBaseUrl(), cfg.isVision(), cfg.isAudio(), Boolean.TRUE.equals(p.getIsDefault()));
+            if (Boolean.TRUE.equals(p.getIsDefault())) {
+                hasDbDefault = true;
             }
-            ChatModel model = buildModel(cfg);
-            models.put(key, model);
-            configs.put(key, cfg);
-            log.info("已注册 LLM 供应商 [{}] -> model={}, baseUrl={}, multimodal={}",
-                    key, cfg.getModel(), cfg.getBaseUrl(), cfg.isMultimodal());
-        });
-
-        if (!models.containsKey(llmProperties.getDefaultProvider())) {
-            throw new IllegalStateException("默认 LLM 供应商 [" + llmProperties.getDefaultProvider()
-                    + "] 未注册成功，请检查 crush.ai.providers 配置");
         }
 
-        // 探测 Alibaba DashScope 原生 ChatModel Bean，注册为 [qwen-native] 供应商
+        // 3. 默认供应商：DB is_default 优先，否则 YAML default-provider
+        String dbDefault = dbProviders.stream()
+                .filter(p -> Boolean.TRUE.equals(p.getIsDefault()))
+                .map(AiProvider::getProviderKey)
+                .findFirst()
+                .orElse(null);
+        defaultKey = hasDbDefault && dbDefault != null ? dbDefault : llmProperties.getDefaultProvider();
+
+        // 4. 探测 Alibaba DashScope 原生 ChatModel Bean，注册为 [qwen-native] 供应商
         DashScopeChatModel dashscope = dashscopeChatModelProvider.getIfAvailable();
         if (dashscope != null) {
             models.put(QWEN_NATIVE, dashscope);
             LlmProperties.ProviderConfig nativeCfg = new LlmProperties.ProviderConfig();
             nativeCfg.setBaseUrl("dashscope-native");
             nativeCfg.setModel("(alibaba-managed: qwen-plus/qwen-vl-plus/qwen-omni-turbo)");
-            nativeCfg.setMultimodal(true);
+            nativeCfg.setVision(true);
+            nativeCfg.setAudio(true);
             configs.put(QWEN_NATIVE, nativeCfg);
-            log.info("已注册 Alibaba DashScope 原生 ChatModel -> [{}]（通义全家桶 + 多模态）", QWEN_NATIVE);
+            log.info("已注册 Alibaba DashScope 原生 ChatModel -> [{}]（通义全家桶 + 视觉/音频）", QWEN_NATIVE);
         } else {
-            log.warn("未探测到 DashScopeChatModel Bean，[qwen-native] 不可用（需配置 spring.ai.dashscope.api-key）");
+            log.debug("未探测到 DashScopeChatModel Bean，[qwen-native] 不可用（需配置 spring.ai.dashscope.api-key）");
         }
+
+        if (!models.containsKey(defaultKey)) {
+            throw new IllegalStateException("默认 LLM 供应商 [" + defaultKey
+                    + "] 未注册成功，请检查 crush.ai.providers 或自定义供应商配置");
+        }
+        log.info("ChatModelRegistry 重建完成，共 {} 个供应商，默认 = [{}]", models.size(), defaultKey);
     }
 
     /**
@@ -101,7 +141,7 @@ public class ChatModelRegistry {
      */
     public ChatModel get(String provider) {
         if (StrUtil.isBlank(provider)) {
-            return getDefault();
+            return models.get(defaultKey);
         }
         ChatModel model = models.get(provider);
         if (model == null) {
@@ -112,29 +152,35 @@ public class ChatModelRegistry {
 
     /** 默认供应商 ChatModel */
     public ChatModel getDefault() {
-        return models.get(llmProperties.getDefaultProvider());
+        return models.get(defaultKey);
     }
 
     /** 默认供应商代号 */
     public String defaultProvider() {
-        return llmProperties.getDefaultProvider();
+        return defaultKey;
     }
 
-    /** 是否多模态供应商 */
-    public boolean isMultimodal(String provider) {
+    /** 供应商是否支持视觉（图像理解） */
+    public boolean isVision(String provider) {
         LlmProperties.ProviderConfig cfg = provider == null ? null : configs.get(provider);
-        return cfg != null && cfg.isMultimodal();
+        return cfg != null && cfg.isVision();
+    }
+
+    /** 供应商是否支持音频输入（语音理解） */
+    public boolean isAudio(String provider) {
+        LlmProperties.ProviderConfig cfg = provider == null ? null : configs.get(provider);
+        return cfg != null && cfg.isAudio();
     }
 
     /**
-     * 返回一个可用的多模态供应商代号，优先 [qwen-vl]（视觉专用），其次 [qwen-native]
-     * （通义全家桶含视觉/音频），再其它声明 multimodal=true 的供应商。没有则返回 null。
+     * 返回一个可用的视觉供应商代号，优先 [qwen-vl]（视觉专用），其次 [qwen-native]
+     * （通义全家桶含视觉/音频），再其它声明 vision=true 的供应商。没有则返回 null。
      */
-    public String firstMultimodal() {
+    public String firstVision() {
         String preferred = null;
         String nativeOr = null;
         for (Map.Entry<String, LlmProperties.ProviderConfig> e : configs.entrySet()) {
-            if (!e.getValue().isMultimodal()) {
+            if (!e.getValue().isVision()) {
                 continue;
             }
             if ("qwen-vl".equals(e.getKey())) {
@@ -150,12 +196,25 @@ public class ChatModelRegistry {
         return nativeOr != null ? nativeOr : preferred;
     }
 
+    /** 自定义供应商实体 -> ProviderConfig（capabilities 字符串 → vision/audio 布尔值） */
+    private LlmProperties.ProviderConfig toProviderConfig(AiProvider p) {
+        LlmProperties.ProviderConfig cfg = new LlmProperties.ProviderConfig();
+        cfg.setBaseUrl(p.getBaseUrl());
+        cfg.setApiKey(p.getApiKey());
+        cfg.setModel(p.getModel());
+        cfg.setTemperature(p.getTemperature() != null ? p.getTemperature() : 0.7);
+        cfg.setTopP(p.getTopP());
+        cfg.setMaxTokens(p.getMaxTokens());
+        List<String> caps = AiProviderConverter.parseCapabilities(p.getCapabilities());
+        cfg.setVision(caps.contains("vision"));
+        cfg.setAudio(caps.contains("audio"));
+        return cfg;
+    }
+
     /**
      * 构造单个 OpenAI 兼容协议的 ChatModel。
      */
     private ChatModel buildModel(LlmProperties.ProviderConfig cfg) {
-        // 归一化 base-url：Spring AI 会在 baseUrl 后追加固定的 /v1/chat/completions，
-        // 若配置里已含结尾的 /v1 会导致重复（如 dashscope 的 compatible-mode/v1 → /v1/v1/chat/completions 404）。
         String base = cfg.getBaseUrl();
         if (StrUtil.isNotBlank(base) && base.endsWith("/v1")) {
             base = base.substring(0, base.length() - 3);

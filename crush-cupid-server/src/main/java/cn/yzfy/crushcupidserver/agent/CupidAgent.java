@@ -13,6 +13,7 @@ import cn.yzfy.crushcupidserver.model.entity.Crush;
 import cn.yzfy.crushcupidserver.model.service.ChatMediaService;
 import cn.yzfy.crushcupidserver.model.service.CrushService;
 import cn.yzfy.crushcupidserver.model.vo.MultiChunkVO;
+import cn.yzfy.crushcupidserver.skill.SkillAdvisorService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -40,11 +41,11 @@ import java.util.function.Supplier;
 /**
  * @className CupidAgent
  * @description 智能 agent 门面（Facade）：对外只暴露 chat，屏蔽工具注册、advisor、记忆、
- * 供应商路由与多模态拼装细节。
+ * 供应商路由与视觉/音频（vision/audio）能力分流细节。
  * <p>
  * 路由：按请求级 {@code provider} 选择 ChatClient；缺省走默认供应商（如 deepseek）。
- * 多模态：若请求带 {@link cn.yzfy.crushcupidserver.model.dto.ChatMedia}，拼装为带 media 的 {@link UserMessage} 发送给模型；
- * 同时校验目标供应商是否声明支持多模态（vision/audio）。
+ * 能力：若请求带 {@link cn.yzfy.crushcupidserver.model.dto.ChatMedia}，拼装为带 media 的 {@link UserMessage} 发送给模型；
+ * 图片走视觉（vision）、音频走语音（audio）能力，分别校验目标供应商是否声明支持。
  * @author 一朝风月
  * @code facade
  * @createTime 2026-08-26
@@ -58,9 +59,12 @@ public class CupidAgent {
     private final CrushService crushService;
     private final PersonaAdvisor personaAdvisor;
     private final MemoryAdvisor memoryAdvisor;
+    private final org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor pgMemoryAdvisor;
+    private final org.springframework.ai.chat.memory.MessageWindowChatMemory advisorChatMemory;
     private final StickerService stickerService;
     private final ImageStorageService imageStorageService;
     private final ChatMediaService chatMediaService;
+    private final SkillAdvisorService skillAdvisorService;
     private final Scheduler aiScheduler;
 
     /**
@@ -72,6 +76,18 @@ public class CupidAgent {
      * DB 查询和媒体处理并行执行，总耗时 = max(DB, 媒体处理) 而非相加，请求线程立即返回 Flux。
      */
     public Flux<MultiChunkVO> chat(ChatRequestDTO dto) {
+        return doChat(dto, false);
+    }
+
+    /**
+     * 军师模式对话（流式）：强制以「军师」身份回应，使用独立的军师记忆命名空间，
+     * 与 {@link #chat}（模拟 crush）完全分离。skillPrompt 可携带具体子命令的任务要求。
+     */
+    public Flux<MultiChunkVO> advisorChat(ChatRequestDTO dto) {
+        return doChat(dto, true);
+    }
+
+    private Flux<MultiChunkVO> doChat(ChatRequestDTO dto, boolean forcedAdvisorMode) {
         if (StrUtil.isBlank(dto.getCrushSlug())) {
             throw BizException.badRequest("缺少 crushSlug");
         }
@@ -82,8 +98,9 @@ public class CupidAgent {
         }
         String provider = dto.getProvider();
         String crushSlug = dto.getCrushSlug();
+        boolean advisorMode = forcedAdvisorMode || Boolean.TRUE.equals(dto.getAdvisorMode());
 
-        // 若请求带图片且当前供应商非多模态，自动切到多模态视觉模型（让模型真正"看懂"聊天图片）
+        // 若请求带图片且当前供应商非视觉（vision），自动切到视觉模型（让模型真正"看懂"聊天图片）
         String effectiveProvider = chatClientProvider.resolveProvider(provider, hasImageMedia(dto));
 
         // 预处理并行化：DB 查询 ‖ 媒体处理，总耗时 = max(两者) 而非相加
@@ -102,12 +119,13 @@ public class CupidAgent {
                             saveChatMedia(crush.getId(), built.imageUrls());
                         }
                         ChatClient chatClient = chatClientProvider.get(effectiveProvider);
-                        return new ChatContext(crush, chatClient, built.message());
+                        return new ChatContext(crush, chatClient, built.message(),
+                                dto.getSkillPrompt(), advisorMode);
                     })
-                .doOnSubscribe(s -> log.info("[chat] 预处理开始 crush={}", crushSlug))
+                .doOnSubscribe(s -> log.info("[chat] 预处理开始 crush={} advisorMode={}", crushSlug, advisorMode))
                 .doOnNext(ctx -> log.info("[chat] 预处理完成 耗时={}ms crush={}",
                         System.currentTimeMillis() - preStart, crushSlug))
-                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
+                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush(), ctx.skillPrompt(), ctx.advisorMode()));
     }
 
     /**
@@ -131,10 +149,10 @@ public class CupidAgent {
                     }
                     ChatClient chatClient = chatClientProvider.get(provider);
                     UserMessage userMessage = new UserMessage(buildProactivePrompt(crush, contextHint));
-                    return new ChatContext(crush, chatClient, userMessage);
+                    return new ChatContext(crush, chatClient, userMessage, null, false);
                 })
                 .subscribeOn(aiScheduler)
-                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush()));
+                .flatMapMany(ctx -> streamMulti(ctx.chatClient(), ctx.userMessage(), ctx.crush(), ctx.skillPrompt(), ctx.advisorMode()));
     }
 
     /**
@@ -143,17 +161,32 @@ public class CupidAgent {
      * 切分阶段用 {@code publishOn(aiScheduler)} 让下游 chunk 投递到虚拟线程，
      * 避免 emitter.send 的同步 socket 写阻塞 LLM 流式响应线程。
      */
-    private Flux<MultiChunkVO> streamMulti(ChatClient chatClient, UserMessage userMessage, Crush crush) {
-        String conversationId = "crush:" + crush.getId();
-        String persona = buildPersona(crush);
+    private Flux<MultiChunkVO> streamMulti(ChatClient chatClient, UserMessage userMessage, Crush crush, String skillPrompt, boolean advisorMode) {
+        // 军师对话使用独立记忆命名空间，避免与「模拟 crush」对话历史互相污染
+        String conversationId = (advisorMode ? "advisor:crush:" : "crush:") + crush.getId();
+        String persona;
+        if (advisorMode) {
+            // 军师模式：用军师人设替代 crush 人格，注入 skill prompt 作为任务；记忆保留作背景上下文
+            persona = skillAdvisorService.advisorSystemPrompt(skillPrompt);
+        } else {
+            persona = buildPersona(crush);
+            if (StrUtil.isNotBlank(skillPrompt)) {
+                persona = persona + "\n\n## 按需注入的 skill 提示\n" + skillPrompt.trim() + "\n";
+            }
+        }
+        final String personaText = persona;
         String memory = buildMemory(crush);
 
+        // 记忆 advisor 按模式选择：模拟对话用 PG 记忆；军师对话用独立内存记忆（不落库、不污染历史）
+        org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor chatMemoryAdvisor = advisorMode
+                ? org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor.builder(advisorChatMemory).build()
+                : pgMemoryAdvisor;
         Flux<String> raw = chatClient.prompt()
                 .messages(userMessage)
                 .advisors(a -> a
-                        .advisors(personaAdvisor, memoryAdvisor)
+                        .advisors(personaAdvisor, chatMemoryAdvisor)
                         .param(ChatMemory.CONVERSATION_ID, conversationId)
-                        .param(PersonaAdvisor.CONTEXT_KEY, persona)
+                        .param(PersonaAdvisor.CONTEXT_KEY, personaText)
                         .param(MemoryAdvisor.CONTEXT_KEY, memory))
                 .stream()
                 .content()
@@ -204,7 +237,8 @@ public class CupidAgent {
     /**
      * 异步预处理结果容器：把 crush / chatClient / userMessage 打包传给 streamMulti。
      */
-    private record ChatContext(Crush crush, ChatClient chatClient, UserMessage userMessage) {
+    private record ChatContext(Crush crush, ChatClient chatClient, UserMessage userMessage,
+                               String skillPrompt, boolean advisorMode) {
     }
 
     /**
@@ -244,7 +278,7 @@ public class CupidAgent {
                         chatClient.prompt()
                                 .messages(userMessage)
                                 .advisors(a -> a
-                                        .advisors(personaAdvisor, memoryAdvisor)
+                                        .advisors(personaAdvisor, memoryAdvisor, pgMemoryAdvisor)
                                         .param(ChatMemory.CONVERSATION_ID, conversationId)
                                         .param(PersonaAdvisor.CONTEXT_KEY, buildPersona(crush))
                                         .param(MemoryAdvisor.CONTEXT_KEY, buildMemory(crush)))
@@ -307,8 +341,9 @@ public class CupidAgent {
     /**
      * 构造用户消息（按供应商能力分流媒体）：
      * <ul>
-     *   <li>多模态供应商：图片/音频以 {@link Media} 直传，模型视觉/听觉理解（分享生活照的主路径，不走 OCR）</li>
-     *   <li>非多模态供应商：图片走 OCR 兜底提取文字（截图/文档类仍可聊）；提取不到文字则告知模型「对方发了图但你看不见」；
+     *   <li>视觉（vision）供应商：图片以 {@link Media} 直传，模型图像理解（分享生活照的主路径，不走 OCR）</li>
+     *   <li>音频（audio）供应商：音频以 {@link Media} 直传，模型语音理解</li>
+     *   <li>非视觉供应商：图片走 OCR 兜底提取文字（截图/文档类仍可聊）；提取不到文字则告知模型「对方发了图但你看不见」；
      *       附件（FILE_BASE64）抽取文本内容拼进消息（与供应商能力无关）</li>
      * </ul>
      * <p>
@@ -323,7 +358,8 @@ public class CupidAgent {
         if (mediaList == null || mediaList.isEmpty()) {
             return new BuiltMessage(new UserMessage(text), List.of());
         }
-        boolean multimodal = chatClientProvider.isMultimodal(provider);
+        boolean vision = chatClientProvider.isVision(provider);
+        boolean audio = chatClientProvider.isAudio(provider);
         StringBuilder enriched = new StringBuilder(text);
         List<Media> medias = new ArrayList<>();
         List<String> imageUrls = new ArrayList<>();
@@ -341,7 +377,7 @@ public class CupidAgent {
                         log.warn("图片持久化失败，跳过回显：{}", e.getMessage());
                         imageUrl = null;
                     }
-                    if (multimodal) {
+                    if (vision) {
                         medias.add(toMedia(m));
                     } else {
                         enriched.append("\n[对方发来一张图片，你暂时无法查看图片内容，请不要编造图片细节]\n");
@@ -366,10 +402,10 @@ public class CupidAgent {
                             .append(StrUtil.blankToDefault(content, "(内容为空)")).append("\n");
                 }
                 case cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_URL, cn.yzfy.crushcupidserver.model.dto.ChatMedia.TYPE_AUDIO_BASE64 -> {
-                    if (multimodal) {
+                    if (audio) {
                         medias.add(toMedia(m));
                     } else {
-                        throw BizException.badRequest("当前供应商不支持语音输入，请切换多模态供应商");
+                        throw BizException.badRequest("当前供应商不支持语音输入，请切换支持音频的供应商");
                     }
                 }
                 default -> throw BizException.badRequest("不支持的 ChatMedia type：" + m.getType());

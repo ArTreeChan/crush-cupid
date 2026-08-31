@@ -27,7 +27,7 @@
 |------|------|
 | Skill 远程调用 | 通过 GitHub raw URL 拉取 SKILL.md 元信息 + prompts 模板，本地 TTL 缓存 |
 | 多供应商路由 | DeepSeek / 通义千问 / OpenAI / Qwen-Native（DashScope 原生）一键切换，按 `provider` 字段路由 |
-| 多模态对话 | 支持图像 / 音频输入（qwen-vl / gpt-4o 等），自动校验供应商多模态能力 |
+| 视觉/音频对话 | 供应商能力可配：文本（默认）/ 视觉看图（vision）/ 音频听语音（audio），非视觉降级 OCR |
 | 多条消息 | LLM 用 `\|\|\|` 分隔连发短消息，像真人微信一样「在吗？」「哈哈哈」「你猜」 |
 | 表情包 | LLM 按情绪/性格/情境自主决定何时发表情包，后端 prompt 标记 `[[sticker:情绪]]` 方案（绕开 Spring AI 流式 tool call 不稳定），从 ChineseBQB 素材库随机抽取，经 jsdelivr CDN 加速，独立气泡渲染 |
 | 图片上传持久化 | 对话中上传图片自动落盘（`chat_media` 表独立存储 URL），刷新/重启后历史回显不丢失 |
@@ -130,16 +130,17 @@ crush:
         base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
         api-key: ${DASHSCOPE_API_KEY}
         model: qwen-plus
-      qwen-vl:                         # 多模态视觉
+      qwen-vl:                         # 视觉能力（图像理解）
         base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
         api-key: ${DASHSCOPE_API_KEY}
         model: qwen-vl-plus
-        multimodal: true
-      openai:
+        vision: true
+      openai:                          # 视觉 + 音频能力
         base-url: https://api.openai.com
         api-key: ${OPENAI_API_KEY}
         model: gpt-4o
-        multimodal: true
+        vision: true
+        audio: true
   skill:
     # GitHub raw 基础地址，兼容多种写法（raw 目录 / github.com/tree / 指向 SKILL.md 的完整地址）
     base-url: https://raw.githubusercontent.com/xiaoheizi8/crush-skills/main
@@ -206,7 +207,7 @@ crush:
 // 切到千问
 { "crushSlug": "xiaomei", "message": "今天好累", "provider": "qwen" }
 
-// 多模态（自动校验供应商 multimodal: true）
+// 视觉能力（自动校验供应商 vision: true，否则降级 OCR 提取文字 / 自动切换视觉模型）
 {
   "crushSlug": "xiaomei",
   "message": "这张图让我想到你",

@@ -2,7 +2,9 @@ package cn.yzfy.crushcupidserver.agent.tool;
 
 import cn.yzfy.crushcupidserver.model.entity.Crush;
 import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.skill.SkillAdvisorService;
 import cn.yzfy.crushcupidserver.skill.SkillCatalogService;
+import cn.yzfy.crushcupidserver.skill.SkillReportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.tool.annotation.Tool;
@@ -22,6 +24,8 @@ public class CrushTools {
 
     private final CrushService crushService;
     private final SkillCatalogService skillCatalogService;
+    private final SkillAdvisorService skillAdvisorService;
+    private final SkillReportService skillReportService;
     private final ObjectMapper objectMapper;
 
     @Tool(description = "列出所有已创建的暗恋对象（代号 slug + 花名）")
@@ -65,6 +69,17 @@ public class CrushTools {
     public String loadSkillPrompt(@ToolParam(description = "prompt 名称，如 persona_builder / confession_simulator") String name) {
         String prompt = skillCatalogService.getPrompt(name);
         return prompt == null ? "未找到 prompt：" + name : prompt;
+    }
+
+    @Tool(description = "军师模式：以毒舌靠谱的军师角色针对用户问题给出具体可执行建议。子命令：strategy(策略制定)/prep(行动前准备)/analyze(互动复盘)/confession(告白规划)/reality(现实检验)；report(关系报告)需提供 crushSlug")
+    public String invokeAdvisor(@ToolParam(description = "军师子命令：advisor/strategy/prep/analyze/confession/reality/report") String name,
+                                @ToolParam(description = "用户问题或粘贴的聊天记录") String question,
+                                @ToolParam(description = "暗恋对象 slug；report 子命令必填，可为空") String crushSlug) {
+        SkillAdvisorService.AdvisorDescriptor desc = skillAdvisorService.getDescriptor(name);
+        if (desc != null && desc.requiresCrush()) {
+            return skillReportService.generate(crushSlug);
+        }
+        return skillAdvisorService.invoke(name, question, null);
     }
 
     private String writeJson(Object value) {

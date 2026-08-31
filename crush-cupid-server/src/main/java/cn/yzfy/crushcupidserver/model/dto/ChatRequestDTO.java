@@ -25,4 +25,10 @@ public class ChatRequestDTO {
 
     /** 多模态输入列表，可包含图片/音频的 URL 或 base64；为空则纯文本对话 */
     private List<ChatMedia> media;
+
+    /** 按需注入的 skill prompt 内容（军师/其它 prompt），将追加进系统提示；为空则不注入 */
+    private String skillPrompt;
+
+    /** 军师模式：为 true 时用军师人设（替代 crush 人格）回应，配合 skillPrompt 注入任务；false/null 走普通 crush 对话 */
+    private Boolean advisorMode;
 }

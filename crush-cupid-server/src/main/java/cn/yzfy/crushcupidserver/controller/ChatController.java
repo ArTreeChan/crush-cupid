@@ -78,6 +78,15 @@ public class ChatController {
     }
 
     /**
+     * 军师模式对话（流式多条消息）。独立于模拟对话，使用军师人设与独立内存记忆，
+     * 不写入模拟对话历史。
+     */
+    @PostMapping(value = "/advisor", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter advisor(@RequestBody ChatRequestDTO dto) {
+        return stream(cupidAgent.advisorChat(dto), "/api/chat/advisor " + safeSlug(dto.getCrushSlug()));
+    }
+
+    /**
      * crush 主动发起对话（流式多条消息）。用户进入对话页或点击「等 ta 主动找我」时调用。
      */
     @PostMapping(value = "/proactive", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

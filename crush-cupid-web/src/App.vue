@@ -21,6 +21,10 @@
           <span class="menu-icon">💬</span>
           <span>对话</span>
         </a-menu-item>
+        <a-menu-item key="/advisor">
+          <span class="menu-icon">🧠</span>
+          <span>军师</span>
+        </a-menu-item>
         <a-menu-item key="/crush">
           <span class="menu-icon">💞</span>
           <span>暗恋对象</span>
@@ -28,6 +32,10 @@
         <a-menu-item key="/skill">
           <span class="menu-icon">📚</span>
           <span>Skill 目录</span>
+        </a-menu-item>
+        <a-menu-item key="/ai-provider">
+          <span class="menu-icon">⚙️</span>
+          <span>大模型 API</span>
         </a-menu-item>
       </a-menu>
       <div class="sider-footer">made with 💗</div>

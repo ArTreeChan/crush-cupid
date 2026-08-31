@@ -55,7 +55,10 @@ public class LlmProperties {
         /** 最大生成 token 数，可选 */
         private Integer maxTokens;
 
-        /** 是否支持多模态（vision/audio），用于路由层校验。默认 false */
-        private boolean multimodal = false;
+        /** 是否支持视觉（图像理解），默认 false */
+        private boolean vision = false;
+
+        /** 是否支持音频输入（语音理解），默认 false */
+        private boolean audio = false;
     }
 }

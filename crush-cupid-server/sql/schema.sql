@@ -108,3 +108,42 @@ CREATE TABLE IF NOT EXISTS crush_version (
 );
 
 CREATE INDEX IF NOT EXISTS idx_version_crush ON crush_version(crush_id, version DESC);
+
+-- ============================================
+-- 5. crush_report — 关系进展报告（军师 LLM 生成，落库供历史管理）
+-- ============================================
+CREATE TABLE IF NOT EXISTS crush_report (
+    id          BIGSERIAL PRIMARY KEY,
+    crush_id    BIGINT NOT NULL REFERENCES crush(id) ON DELETE CASCADE,
+    crush_name  VARCHAR(100),
+    title       VARCHAR(255),              -- 报告标题（含日期，如「关系进展报告：小美」）
+    markdown    TEXT NOT NULL,             -- 报告 Markdown 全文
+    source      VARCHAR(20) DEFAULT 'manual',  -- 生成来源：manual(手动) / scheduled(定时)
+    report_date DATE,                      -- 报告归属日期（用于每日去重）
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_crush_report_crush ON crush_report(crush_id, report_date DESC);
+
+-- ============================================
+-- 6. ai_provider — 自定义大模型 API 供应商（运行时增删改查，无需改配置/重启）
+--    统一走 OpenAI 兼容协议；与 YAML 系统供应商合并后供 ChatModelRegistry 动态注册
+--    capabilities: 逗号分隔的能力列表（vision=视觉看图, audio=音频输入听语音）
+--    文本(text)是所有 LLM 基本能力，无需声明
+-- ============================================
+CREATE TABLE IF NOT EXISTS ai_provider (
+    id              BIGSERIAL PRIMARY KEY,
+    name            VARCHAR(100) NOT NULL,         -- 显示名，如「自定义 OpenAI」
+    provider_key    VARCHAR(50) UNIQUE NOT NULL,   -- 供应商代号（路由 key）
+    base_url        VARCHAR(500),                  -- OpenAI 兼容 base-url
+    api_key         VARCHAR(500),                  -- API Key（允许空，走环境密钥）
+    model           VARCHAR(100),                  -- 模型名
+    temperature     DOUBLE PRECISION DEFAULT 0.7,
+    top_p           DOUBLE PRECISION,
+    max_tokens      INT,
+    capabilities    VARCHAR(200) DEFAULT '',        -- 能力：逗号分隔 vision / audio（如 'vision', 'vision,audio'）
+    is_default      BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+

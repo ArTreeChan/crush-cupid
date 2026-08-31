@@ -54,6 +54,54 @@ export interface SkillCatalog {
   prompts: string[]
 }
 
+export interface AdvisorCommand {
+  name: string
+  trigger: string
+  title: string
+  description: string
+  promptName: string
+  requiresCrush: boolean
+}
+
+export interface CrushReport {
+  id: number
+  crushId: number
+  crushName?: string
+  title?: string
+  source?: string
+  reportDate?: string
+  markdown?: string
+  createdAt?: string
+}
+
+export interface AiProvider {
+  id: number
+  name: string
+  providerKey: string
+  baseUrl: string
+  apiKey?: string
+  model: string
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  /** 能力列表：vision=视觉看图, audio=音频听语音（文本是所有 LLM 基本能力） */
+  capabilities?: string[]
+  isDefault?: boolean
+}
+
+export interface AiProviderPayload {
+  name?: string
+  providerKey?: string
+  baseUrl?: string
+  apiKey?: string
+  model?: string
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  capabilities?: string[]
+  isDefault?: boolean
+}
+
 export interface Result<T> {
   code: number
   message: string

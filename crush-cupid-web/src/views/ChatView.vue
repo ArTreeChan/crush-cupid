@@ -259,7 +259,19 @@ async function scrollToBottom() {
 const MSG_SEP = '|||'
 
 /**
- * 解析历史文本中的 [[sticker:URL]] 标记，返回解析结果：
+ * 清洗用户消息文本里的图片占位/内联残留，避免字面量泄漏到气泡：
+ * - [图片] 占位（后端正常清，这里兜底）
+ * - 历史内联 [[图片:URL]] 标记（后端已抽成 mediaUrl，这里是兜底防残留）
+ */
+function cleanMediaMarkers(s?: string): string {
+  if (!s) return ''
+  return s
+    .replace(/\[\[图片:[^\]]*\]\]/g, '')
+    .replace(/\[图片\]/g, '')
+    .trim()
+}
+
+/** 解析历史文本中的 [[sticker:URL]] 标记，返回解析结果：
  * - { stickers: string[], text: string }
  *   stickers: 提取出的表情包 URL 列表
  *   text: 清理标记后的纯文本（用于文本气泡）
@@ -335,8 +347,8 @@ async function loadHistory(slug: string) {
         if (r.mediaUrl) {
           list.push({ role: 'user', kind: 'image', content: r.mediaUrl })
         }
-        // 再推文本气泡（[图片] 标记已在后端清除）
-        const text = r.content?.trim()
+        // 再推文本气泡（[图片] 标记已在后端清除，这里兜底清洗历史内联 [[图片:URL]] 占位残留）
+        const text = cleanMediaMarkers(r.content)
         if (text) {
           list.push({ role: 'user', content: text })
         }
@@ -691,6 +703,7 @@ onUnmounted(() => {
 }
 
 .chat-card__head {
+  position: relative;
   padding: 14px 20px;
   border-bottom: 1px solid var(--cupid-border);
   background: var(--cupid-gradient-soft);
@@ -706,6 +719,37 @@ onUnmounted(() => {
   margin-top: 2px;
   font-size: 12px;
   color: var(--cupid-text-secondary);
+}
+
+/* 军师模式开关 */
+.chat-card__mode {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--cupid-bg-card);
+  border: 1px solid var(--cupid-border);
+  transition: all 0.25s ease;
+}
+
+.chat-card__mode.on {
+  border-color: var(--cupid-primary);
+  background: var(--cupid-gradient-soft);
+}
+
+.chat-card__mode-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cupid-text-secondary);
+}
+
+.chat-card__mode.on .chat-card__mode-label {
+  color: var(--cupid-primary);
 }
 
 /* 消息列表 */

@@ -1,10 +1,14 @@
 import http from './http'
 import type {
+  AdvisorCommand,
+  AiProvider,
+  AiProviderPayload,
   BuildEvent,
   ChatHistoryVO,
   ChatMedia,
   Crush,
   CrushCreatePayload,
+  CrushReport,
   MultiChunk,
   Result,
   SkillCatalog,
@@ -40,6 +44,26 @@ export async function deleteCrush(id: number): Promise<void> {
   await unwrap(http.delete<Result<void>>(`/crush/${id}`))
 }
 
+export async function listAiProviders(): Promise<AiProvider[]> {
+  return unwrap(http.get<Result<AiProvider[]>>('/ai-provider'))
+}
+
+export async function getAiProvider(id: number): Promise<AiProvider> {
+  return unwrap(http.get<Result<AiProvider>>(`/ai-provider/${id}`))
+}
+
+export async function createAiProvider(payload: AiProviderPayload): Promise<AiProvider> {
+  return unwrap(http.post<Result<AiProvider>>('/ai-provider', payload))
+}
+
+export async function updateAiProvider(id: number, payload: AiProviderPayload): Promise<AiProvider> {
+  return unwrap(http.put<Result<AiProvider>>(`/ai-provider/${id}`, payload))
+}
+
+export async function deleteAiProvider(id: number): Promise<void> {
+  await unwrap(http.delete<Result<void>>(`/ai-provider/${id}`))
+}
+
 export async function getSkillCatalog(): Promise<SkillCatalog> {
   return unwrap(http.get<Result<SkillCatalog>>('/skill/catalog'))
 }
@@ -48,20 +72,122 @@ export async function getSkillPrompt(name: string): Promise<string> {
   return unwrap(http.get<Result<string>>(`/skill/prompt/${name}`))
 }
 
+/** 军师模式子命令列表 */
+export async function listAdvisorCommands(): Promise<AdvisorCommand[]> {
+  return unwrap(http.get<Result<AdvisorCommand[]>>('/skill/advisor'))
+}
+
+/** 调用军师子命令，返回 LLM 军师回复文本 */
+export async function invokeAdvisor(
+  body: { name: string; question?: string; crushSlug?: string },
+): Promise<string> {
+  return unwrap(http.post<Result<string>>('/skill/advisor/invoke', body))
+}
+
+/** 生成关系报告并落库，返回报告详情（含 markdown）；需 crushSlug */
+export async function generateReport(crushSlug: string): Promise<CrushReport> {
+  return unwrap(http.post<Result<CrushReport>>('/skill/advisor/report', { crushSlug }))
+}
+
+/** 某暗恋对象的关系报告历史（新→旧） */
+export async function listReports(crushSlug: string): Promise<CrushReport[]> {
+  return unwrap(http.get<Result<CrushReport[]>>('/skill/report/list', { params: { crushSlug } }))
+}
+
+/** 报告详情（含 markdown 全文） */
+export async function getReportDetail(id: number): Promise<CrushReport> {
+  return unwrap(http.get<Result<CrushReport>>(`/skill/report/${id}`))
+}
+
+/** 删除一条报告历史 */
+export async function deleteReport(id: number): Promise<void> {
+  await unwrap(http.delete<Result<void>>(`/skill/report/${id}`))
+}
+
+/** 下载关系报告 .docx */
+function triggerBlobDownload(resp: Blob, filename: string): void {
+  const url = URL.createObjectURL(resp)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** 下载刚生成的报告 .docx（现场生成，不落库） */
+export async function downloadReportLive(crushSlug: string, md?: string): Promise<void> {
+  const resp = await http.get('/skill/advisor/report/download', {
+    params: { crushSlug, md: md || undefined },
+    responseType: 'blob',
+  })
+  const ct = resp.headers['content-type'] || ''
+  if (ct.includes('application/json')) {
+    const text = await (resp.data as Blob).text()
+    throw new Error(text || '下载失败')
+  }
+  triggerBlobDownload(
+    resp.data as Blob,
+    `关系报告_${crushSlug}_${new Date().toISOString().slice(0, 10)}.docx`,
+  )
+}
+
+/** 下载一条已保存的报告 .docx（读库，不重复调用 LLM） */
+export async function downloadSavedReport(id: number, crushName?: string): Promise<void> {
+  const resp = await http.get(`/skill/report/${id}/download`, { responseType: 'blob' })
+  const ct = resp.headers['content-type'] || ''
+  if (ct.includes('application/json')) {
+    const text = await (resp.data as Blob).text()
+    throw new Error(text || '下载失败')
+  }
+  triggerBlobDownload(resp.data as Blob, `关系报告_${crushName || id}_${new Date().toISOString().slice(0, 10)}.docx`)
+}
+
 /**
  * 流式对话（SSE，POST）。后端每个 chunk 以 {index,type,content,done} JSON 编码在 data 行；
  * 前端按 index 切气泡，支持 crush 一次连发多条短消息 + 表情包气泡。
  * media 可选：图片（IMAGE_BASE64，多模态供应商视觉理解 / 非多模态 OCR 兜底）或文本附件（FILE_BASE64）。
+ * advisorMode 可选：true 时用军师人设回应（配合 skillPrompt 注入任务）；false 走普通 crush 对话。
  */
 export async function streamChat(
   crushSlug: string,
   message: string,
   onChunk: (chunk: MultiChunk) => void,
   media?: ChatMedia[],
+  options?: { advisorMode?: boolean; skillPrompt?: string },
 ): Promise<void> {
   await sseStream(
     '/api/chat',
-    { crushSlug, message, media: media && media.length ? media : undefined },
+    {
+      crushSlug,
+      message,
+      media: media && media.length ? media : undefined,
+      advisorMode: options?.advisorMode || undefined,
+      skillPrompt: options?.skillPrompt || undefined,
+    },
+    onChunk,
+  )
+}
+
+/**
+ * 军师对话（SSE，POST）。独立于模拟对话：走 /api/chat/advisor，使用军师人设 + 独立内存记忆，
+ * 不写入模拟对话历史。skillPrompt 可选，注入具体任务（如「帮我分析如何约 ta」「写个开场白」）。
+ */
+export async function advisorStreamChat(
+  crushSlug: string,
+  message: string,
+  onChunk: (chunk: MultiChunk) => void,
+  skillPrompt?: string,
+): Promise<void> {
+  await sseStream(
+    '/api/chat/advisor',
+    {
+      crushSlug,
+      message,
+      advisorMode: true,
+      skillPrompt: skillPrompt || undefined,
+    },
     onChunk,
   )
 }

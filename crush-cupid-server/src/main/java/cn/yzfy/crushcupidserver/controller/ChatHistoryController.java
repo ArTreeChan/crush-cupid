@@ -71,9 +71,31 @@ public class ChatHistoryController {
         // 3. 按 [图片] 标记顺序匹配回填 mediaUrl
         //    content 中每个 [图片] 对应队列里最早的一张图（FIFO）
         final String IMG_MARKER = "[图片]";
+        // 兼容历史内联格式 [[图片:URL]] / [[图片:URL]]：图片 URL 自带在标记内，直接提取并移除标记
+        final java.util.regex.Pattern LEGACY_IMG = java.util.regex.Pattern.compile("\\[\\[图片:([^\\]]*)\\]\\]");
         for (ChatHistoryVO vo : list) {
             String c = vo.getContent();
-            if (c != null && c.contains(IMG_MARKER)) {
+            if (c == null) {
+                continue;
+            }
+            // 4a. 历史内联 [[图片:URL]]：URL 内嵌，直接回填 mediaUrl 并清掉标记
+            java.util.regex.Matcher legacy = LEGACY_IMG.matcher(c);
+            StringBuilder cleaned = new StringBuilder();
+            int last = 0;
+            while (legacy.find()) {
+                cleaned.append(c, last, legacy.start());
+                String url = legacy.group(1);
+                if (StrUtil.isNotBlank(url) && vo.getMediaUrl() == null) {
+                    vo.setMediaUrl(url);
+                }
+                last = legacy.end();
+            }
+            if (last > 0) {
+                cleaned.append(c, last, c.length());
+                c = cleaned.toString();
+            }
+            // 4b. 新占位标记 [图片]：按出现顺序消费 chat_media FIFO 队列
+            if (c.contains(IMG_MARKER)) {
                 while (c.contains(IMG_MARKER) && !mediaQueue.isEmpty()) {
                     String url = mediaQueue.poll();
                     c = c.replaceFirst(IMG_MARKER, "");
@@ -82,8 +104,9 @@ public class ChatHistoryController {
                     }
                 }
                 // 清理残留的未匹配 [图片] 标记
-                vo.setContent(c.replace(IMG_MARKER, "").trim());
+                c = c.replace(IMG_MARKER, "").trim();
             }
+            vo.setContent(c);
         }
 
         return Result.ok(list);

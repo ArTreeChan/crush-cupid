@@ -19,7 +19,7 @@
         type="info"
         show-icon
         class="provider-alert"
-        message="运行时可增删改自定义大模型供应商，保存后立即生效（无需改配置文件 / 重启）。所有供应商统一走 OpenAI 兼容协议。"
+        message="运行时可增删改自定义大模型供应商，保存后立即生效（无需改配置文件 / 重启）。所有供应商统一走 OpenAI 兼容协议，仅用于文本对话；视觉与语音由系统 yml 配置的模型承担。"
       />
 
       <a-table
@@ -45,13 +45,7 @@
             </div>
           </template>
           <template v-if="column.key === 'feature'">
-            <template v-if="hasCap(record, 'vision')">
-              <a-tag color="green">视觉</a-tag>
-            </template>
-            <template v-if="hasCap(record, 'audio')">
-              <a-tag color="blue">音频</a-tag>
-            </template>
-            <a-tag v-if="!hasCap(record, 'vision') && !hasCap(record, 'audio')">文本</a-tag>
+            <a-tag>文本</a-tag>
           </template>
           <template v-if="column.key === 'temperature'">
             {{ record.temperature ?? '—' }}
@@ -101,12 +95,8 @@
           <a-form-item label="最大 token">
             <a-input-number v-model:value="form.maxTokens" :min="1" :max="128000" placeholder="可选" style="width: 100%" />
           </a-form-item>
-          <a-form-item label="能力">
-            <a-checkbox-group v-model:value="form.capabilities">
-              <a-checkbox value="vision">视觉（看图）</a-checkbox>
-              <a-checkbox value="audio">音频（听语音）</a-checkbox>
-            </a-checkbox-group>
-            <div class="capabilities-hint">文本是所有大模型基本能力，无需勾选</div>
+          <a-form-item label="能力范围">
+            <div class="capabilities-hint">此处供应商仅用于<b>文本对话</b>；视觉（看图）与语音能力由系统配置文件（yml）统一管理，无需在此勾选</div>
           </a-form-item>
         </a-form>
       </a-modal>
@@ -158,10 +148,6 @@ const form = reactive<AiProviderPayload>({
 })
 
 const formTemperature = ref(0.7)
-
-function hasCap(p: AiProvider, cap: string) {
-  return Array.isArray(p.capabilities) && p.capabilities.includes(cap)
-}
 
 function resetForm() {
   Object.assign(form, {

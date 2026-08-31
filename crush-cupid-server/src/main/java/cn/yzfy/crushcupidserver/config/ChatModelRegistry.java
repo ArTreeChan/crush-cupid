@@ -3,7 +3,6 @@ package cn.yzfy.crushcupidserver.config;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.entity.AiProvider;
-import cn.yzfy.crushcupidserver.model.converter.AiProviderConverter;
 import cn.yzfy.crushcupidserver.model.service.AiProviderService;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import jakarta.annotation.PostConstruct;
@@ -92,15 +91,15 @@ public class ChatModelRegistry {
             });
         }
 
-        // 2. 自定义供应商（DB，动态）：同一 key 覆盖系统供应商
+        // 2. 自定义供应商（DB，动态）：同一 key 覆盖系统供应商。仅用于文本对话（vision/audio 固定 false）
         List<AiProvider> dbProviders = aiProviderService.list();
         boolean hasDbDefault = false;
         for (AiProvider p : dbProviders) {
             LlmProperties.ProviderConfig cfg = toProviderConfig(p);
             models.put(p.getProviderKey(), buildModel(cfg));
             configs.put(p.getProviderKey(), cfg);
-            log.info("注册自定义 LLM 供应商 [{}] -> model={}, baseUrl={}, vision={}, audio={}, default={}",
-                    p.getProviderKey(), cfg.getModel(), cfg.getBaseUrl(), cfg.isVision(), cfg.isAudio(), Boolean.TRUE.equals(p.getIsDefault()));
+            log.info("注册自定义 LLM 供应商 [{}] -> model={}, baseUrl={}, default={}",
+                    p.getProviderKey(), cfg.getModel(), cfg.getBaseUrl(), Boolean.TRUE.equals(p.getIsDefault()));
             if (Boolean.TRUE.equals(p.getIsDefault())) {
                 hasDbDefault = true;
             }
@@ -205,9 +204,10 @@ public class ChatModelRegistry {
         cfg.setTemperature(p.getTemperature() != null ? p.getTemperature() : 0.7);
         cfg.setTopP(p.getTopP());
         cfg.setMaxTokens(p.getMaxTokens());
-        List<String> caps = AiProviderConverter.parseCapabilities(p.getCapabilities());
-        cfg.setVision(caps.contains("vision"));
-        cfg.setAudio(caps.contains("audio"));
+        // 页面配置的供应商仅用于文本对话；视觉/语音固定走 YAML 系统供应商（crush.ai.providers），
+        // 避免自定义模型能力误标导致多模态请求路由到不支持视觉的模型
+        cfg.setVision(false);
+        cfg.setAudio(false);
         return cfg;
     }
 

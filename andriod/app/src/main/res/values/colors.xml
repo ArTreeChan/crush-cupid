@@ -2,4 +2,22 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- Cupid 粉色主题 -->
+    <color name="primary">#FF5A7A</color>
+    <color name="primary_deep">#E8405F</color>
+    <color name="primary_soft">#FFEDF1</color>
+    <color name="advisor">#7256FF</color>
+    <color name="advisor_soft">#EFEBFF</color>
+    <color name="chip">#FFF0F3</color>
+    <color name="bg">#FFF8F9</color>
+    <color name="card">#FFFFFF</color>
+    <color name="text_primary">#2A2233</color>
+    <color name="text_secondary">#6B5E70</color>
+    <color name="text_muted">#A5929C</color>
+    <color name="border">#F3E4E9</color>
+    <color name="danger">#FF4D6A</color>
+    <color name="success">#2FBF71</color>
+    <color name="gold">#F5A623</color>
+    <color name="input_bg">#FBF6F7</color>
 </resources>

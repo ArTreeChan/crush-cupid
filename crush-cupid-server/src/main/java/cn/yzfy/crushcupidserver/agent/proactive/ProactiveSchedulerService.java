@@ -2,7 +2,7 @@ package cn.yzfy.crushcupidserver.agent.proactive;
 
 import cn.yzfy.crushcupidserver.agent.CupidAgent;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.service.CrushService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

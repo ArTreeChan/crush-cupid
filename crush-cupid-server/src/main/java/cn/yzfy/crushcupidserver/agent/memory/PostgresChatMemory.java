@@ -1,7 +1,7 @@
 package cn.yzfy.crushcupidserver.agent.memory;
 
 import cn.yzfy.crushcupidserver.model.entity.Conversation;
-import cn.yzfy.crushcupidserver.model.service.ConversationService;
+import cn.yzfy.crushcupidserver.service.ConversationService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;

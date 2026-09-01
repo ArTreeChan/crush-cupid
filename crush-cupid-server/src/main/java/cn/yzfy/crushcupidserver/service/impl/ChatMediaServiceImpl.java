@@ -1,8 +1,8 @@
-package cn.yzfy.crushcupidserver.model.service.impl;
+package cn.yzfy.crushcupidserver.service.impl;
 
+import cn.yzfy.crushcupidserver.mapper.ChatMediaMapper;
 import cn.yzfy.crushcupidserver.model.entity.ChatMedia;
-import cn.yzfy.crushcupidserver.model.mapper.ChatMediaMapper;
-import cn.yzfy.crushcupidserver.model.service.ChatMediaService;
+import cn.yzfy.crushcupidserver.service.ChatMediaService;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 

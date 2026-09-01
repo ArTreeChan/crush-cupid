@@ -7,7 +7,7 @@ import cn.yzfy.crushcupidserver.model.converter.CrushConverter;
 import cn.yzfy.crushcupidserver.model.dto.CrushCreateDTO;
 import cn.yzfy.crushcupidserver.model.dto.CrushUpdateDTO;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.service.CrushService;
 import cn.yzfy.crushcupidserver.model.vo.CrushVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;

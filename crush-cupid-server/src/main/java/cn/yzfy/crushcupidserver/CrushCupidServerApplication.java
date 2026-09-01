@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@MapperScan("cn.yzfy.crushcupidserver.model.mapper")
+@MapperScan("cn.yzfy.crushcupidserver.mapper")
 @EnableScheduling
 @EnableConfigurationProperties({ProactiveProperties.class, ReportProperties.class, UploadProperties.class})
 public class CrushCupidServerApplication {

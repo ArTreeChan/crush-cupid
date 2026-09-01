@@ -1,8 +1,8 @@
-package cn.yzfy.crushcupidserver.model.service.impl;
+package cn.yzfy.crushcupidserver.service.impl;
 
 import cn.yzfy.crushcupidserver.model.entity.CrushReport;
-import cn.yzfy.crushcupidserver.model.mapper.CrushReportMapper;
-import cn.yzfy.crushcupidserver.model.service.CrushReportService;
+import cn.yzfy.crushcupidserver.mapper.CrushReportMapper;
+import cn.yzfy.crushcupidserver.service.CrushReportService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;

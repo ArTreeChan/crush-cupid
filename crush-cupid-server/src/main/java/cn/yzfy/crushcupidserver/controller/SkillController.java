@@ -3,7 +3,7 @@ package cn.yzfy.crushcupidserver.controller;
 import cn.yzfy.crushcupidserver.common.Result;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.entity.CrushReport;
-import cn.yzfy.crushcupidserver.model.service.CrushReportService;
+import cn.yzfy.crushcupidserver.service.CrushReportService;
 import cn.yzfy.crushcupidserver.model.vo.CrushReportVO;
 import cn.yzfy.crushcupidserver.model.vo.SkillCatalogVO;
 import cn.yzfy.crushcupidserver.model.vo.SkillMetaVO;

@@ -1,7 +1,7 @@
 package cn.yzfy.crushcupidserver.agent.tool;
 
 import cn.yzfy.crushcupidserver.model.entity.Crush;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.service.CrushService;
 import cn.yzfy.crushcupidserver.skill.SkillAdvisorService;
 import cn.yzfy.crushcupidserver.skill.SkillCatalogService;
 import cn.yzfy.crushcupidserver.skill.SkillReportService;

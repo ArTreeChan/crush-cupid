@@ -27,16 +27,7 @@ public final class CrushConverter {
 
     public static Crush toEntity(CrushCreateDTO dto) {
         Crush c = new Crush();
-        c.setName(dto.getName());
-        c.setSlug(dto.getSlug());
-        c.setMbti(dto.getMbti());
-        c.setZodiac(dto.getZodiac());
-        c.setOccupation(dto.getOccupation());
-        c.setGender(dto.getGender());
-        c.setKnowDuration(dto.getKnowDuration());
-        c.setRelationshipStatus(dto.getRelationshipStatus());
-        c.setImpression(dto.getImpression());
-        c.setVoiceId(dto.getVoiceId());
+        BeanUtils.copyProperties(dto, c);
         c.setCurrentStage(1);
         c.setStatus("DRAFT");
         c.setTotalMessages(0);

@@ -1,4 +1,4 @@
-package cn.yzfy.crushcupidserver.model.mapper;
+package cn.yzfy.crushcupidserver.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import cn.yzfy.crushcupidserver.model.entity.AiProvider;

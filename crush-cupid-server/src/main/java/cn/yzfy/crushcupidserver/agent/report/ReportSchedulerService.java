@@ -2,9 +2,9 @@ package cn.yzfy.crushcupidserver.agent.report;
 
 import cn.yzfy.crushcupidserver.model.entity.Conversation;
 import cn.yzfy.crushcupidserver.model.entity.Crush;
-import cn.yzfy.crushcupidserver.model.service.ConversationService;
-import cn.yzfy.crushcupidserver.model.service.CrushReportService;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.service.ConversationService;
+import cn.yzfy.crushcupidserver.service.CrushReportService;
+import cn.yzfy.crushcupidserver.service.CrushService;
 import cn.yzfy.crushcupidserver.skill.SkillReportService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

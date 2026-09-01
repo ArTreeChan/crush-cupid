@@ -1,4 +1,4 @@
-package cn.yzfy.crushcupidserver.model.service;
+package cn.yzfy.crushcupidserver.service;
 
 import cn.yzfy.crushcupidserver.model.entity.ChatSource;
 import com.baomidou.mybatisplus.spring.service.IService;

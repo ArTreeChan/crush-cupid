@@ -3,7 +3,7 @@ package cn.yzfy.crushcupidserver.config;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.entity.AiProvider;
-import cn.yzfy.crushcupidserver.model.service.AiProviderService;
+import cn.yzfy.crushcupidserver.service.AiProviderService;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import jakarta.annotation.PostConstruct;
 import lombok.Getter;
@@ -14,6 +14,7 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -198,12 +199,9 @@ public class ChatModelRegistry {
     /** 自定义供应商实体 -> ProviderConfig（capabilities 字符串 → vision/audio 布尔值） */
     private LlmProperties.ProviderConfig toProviderConfig(AiProvider p) {
         LlmProperties.ProviderConfig cfg = new LlmProperties.ProviderConfig();
-        cfg.setBaseUrl(p.getBaseUrl());
-        cfg.setApiKey(p.getApiKey());
-        cfg.setModel(p.getModel());
+        BeanUtils.copyProperties(p, cfg);
+        // 保留温度默认值（实体未配置时回落 0.7）
         cfg.setTemperature(p.getTemperature() != null ? p.getTemperature() : 0.7);
-        cfg.setTopP(p.getTopP());
-        cfg.setMaxTokens(p.getMaxTokens());
         // 页面配置的供应商仅用于文本对话；视觉/语音固定走 YAML 系统供应商（crush.ai.providers），
         // 避免自定义模型能力误标导致多模态请求路由到不支持视觉的模型
         cfg.setVision(false);

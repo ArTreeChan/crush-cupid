@@ -2,8 +2,8 @@ package cn.yzfy.crushcupidserver.config;
 
 import cn.yzfy.crushcupidserver.agent.StickerSanitizer;
 import cn.yzfy.crushcupidserver.model.entity.Conversation;
-import cn.yzfy.crushcupidserver.model.service.ConversationService;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
+import cn.yzfy.crushcupidserver.service.ConversationService;
+import cn.yzfy.crushcupidserver.service.CrushService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;

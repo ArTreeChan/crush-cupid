@@ -8,7 +8,7 @@ import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.converter.AiProviderConverter;
 import cn.yzfy.crushcupidserver.model.dto.AiProviderDTO;
 import cn.yzfy.crushcupidserver.model.entity.AiProvider;
-import cn.yzfy.crushcupidserver.model.service.AiProviderService;
+import cn.yzfy.crushcupidserver.service.AiProviderService;
 import cn.yzfy.crushcupidserver.model.vo.AiProviderVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

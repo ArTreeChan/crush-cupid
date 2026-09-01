@@ -1,17 +1,19 @@
 package cn.yzfy.crushcupidserver.controller;
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.CrushBuildService;
 import cn.yzfy.crushcupidserver.agent.OcrService;
+import cn.yzfy.crushcupidserver.common.DocumentTextExtractor;
 import cn.yzfy.crushcupidserver.common.Result;
 import cn.yzfy.crushcupidserver.common.TextExtractor;
 import cn.yzfy.crushcupidserver.exception.BizException;
 import cn.yzfy.crushcupidserver.model.dto.SourceImportDTO;
 import cn.yzfy.crushcupidserver.model.entity.ChatSource;
 import cn.yzfy.crushcupidserver.model.enums.SourceType;
-import cn.yzfy.crushcupidserver.model.service.ChatSourceService;
-import cn.yzfy.crushcupidserver.model.service.CrushService;
-import cn.yzfy.crushcupidserver.model.service.CrushVersionService;
+import cn.yzfy.crushcupidserver.service.ChatSourceService;
+import cn.yzfy.crushcupidserver.service.CrushService;
+import cn.yzfy.crushcupidserver.service.CrushVersionService;
 import cn.yzfy.crushcupidserver.model.vo.BuildEventVO;
 import cn.yzfy.crushcupidserver.model.vo.BuildResultVO;
 import cn.yzfy.crushcupidserver.model.vo.SourceVO;
@@ -33,7 +35,6 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -62,11 +63,12 @@ public class CrushSourceController {
         }
         ChatSource source = new ChatSource();
         source.setCrushId(crushId);
-        source.setFileType(dto.getType() == null ? SourceType.TEXT.name() : dto.getType().name());
-        source.setFileName(dto.getFileName());
-        source.setContent(TextExtractor.sanitize(dto.getContent()));
-        source.setMessageCount(0);
-        source.setCreatedAt(new Date());
+        BeanUtil.copyProperties(dto, source);
+//        source.setFileType(dto.getType() == null ? SourceType.TEXT.name() : dto.getType().name());
+//        source.setFileName(dto.getFileName());
+//        source.setContent(TextExtractor.sanitize(dto.getContent()));
+//        source.setMessageCount(0);
+//        source.setCreatedAt(new Date());
         chatSourceService.save(source);
         return Result.ok(toSourceVO(source));
     }
@@ -86,7 +88,7 @@ public class CrushSourceController {
                 // 图片 + OCR 已配置：走百炼 MCP OCR 提取文字
                 content = ocrService.recognize(readFileBytes(file));
             } else {
-                // 默认方式：文本文件直接读；图片在 OCR 未配置时同样回退此路径
+                // 文档（pdf/docx）走专用解析，其余按文本文件读取
                 content = readFileContent(file);
             }
         } catch (Exception e) {
@@ -209,13 +211,8 @@ public class CrushSourceController {
 
     private SourceVO toSourceVO(ChatSource s) {
         SourceVO vo = new SourceVO();
-        vo.setId(s.getId());
-        vo.setCrushId(s.getCrushId());
+        BeanUtils.copyProperties(s, vo);
         vo.setType(s.getFileType());
-        vo.setFileName(s.getFileName());
-        vo.setContent(s.getContent());
-        vo.setMessageCount(s.getMessageCount());
-        vo.setCreatedAt(s.getCreatedAt());
         return vo;
     }
 
@@ -232,10 +229,17 @@ public class CrushSourceController {
     }
 
     /**
-     * 读取文件内容：委托 {@link TextExtractor} 按 BOM 检测编码并清洗 NUL 字节。
+     * 读取非图片文件内容：pdf/docx 走 {@link DocumentTextExtractor} 专用解析，
+     * 其余文本文件委托 {@link TextExtractor} 按 BOM 检测编码并清洗 NUL 字节。
      */
     private String readFileContent(MultipartFile file) throws IOException {
-        return TextExtractor.extract(file.getBytes());
+        byte[] bytes = file.getBytes();
+        String name = file.getOriginalFilename();
+        if (name != null && (name.toLowerCase().endsWith(".pdf")
+                || name.toLowerCase().endsWith(".docx"))) {
+            return TextExtractor.sanitize(DocumentTextExtractor.extract(name, bytes));
+        }
+        return TextExtractor.extract(bytes);
     }
 
     private void sendEvent(SseEmitter emitter, BuildEventVO event) {

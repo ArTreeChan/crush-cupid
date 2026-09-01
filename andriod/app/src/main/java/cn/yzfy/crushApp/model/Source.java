@@ -7,6 +7,7 @@ public class Source {
     public String type;
     public String fileName;
     public String content;
+    public String analysis;
     public Integer messageCount;
     public String createdAt;
 }

@@ -542,7 +542,45 @@ public class CrushDetailFragment extends Fragment {
             preview.setEllipsize(TextUtils.TruncateAt.END);
             row.addView(preview);
         }
+        if (!TextUtils.isEmpty(s.analysis)) {
+            TextView analyze = new TextView(ctx);
+            String a = readAnalysis(s.analysis);
+            a = a.length() > 90 ? a.substring(0, 90) + "…" : a;
+            analyze.setText("✨ " + a);
+            analyze.setTextSize(12);
+            analyze.setTextColor(0xFF7256FF);
+            analyze.setMaxLines(3);
+            analyze.setEllipsize(TextUtils.TruncateAt.END);
+            analyze.setPadding(0, Ui.dp(ctx, 4), 0, 0);
+            row.addView(analyze);
+        }
         return row;
+    }
+
+    private String readAnalysis(String json) {
+        if (TextUtils.isEmpty(json)) {
+            return "";
+        }
+        try {
+            String t = json.indexOf('{') >= 0 && json.lastIndexOf('}') > json.indexOf('{')
+                    ? json.substring(json.indexOf('{'), json.lastIndexOf('}') + 1) : json;
+            com.google.gson.JsonObject o = cn.yzfy.crushApp.api.GsonFactory.GSON
+                    .fromJson(t, com.google.gson.JsonObject.class);
+            if (o != null) {
+                String kp = o.has("keyPoints") && !o.get("keyPoints").isJsonNull()
+                        ? o.get("keyPoints").getAsString() : "";
+                if (!TextUtils.isEmpty(kp)) {
+                    return "关键要点：" + kp;
+                }
+                String raw = o.has("raw") && !o.get("raw").isJsonNull()
+                        ? o.get("raw").getAsString() : "";
+                if (!TextUtils.isEmpty(raw)) {
+                    return "已记录（原文本）";
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return json.replace('\n', ' ');
     }
 
     private void loadVersions() {

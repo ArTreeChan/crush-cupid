@@ -4,6 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.yzfy.crushcupidserver.agent.CrushBuildService;
 import cn.yzfy.crushcupidserver.agent.OcrService;
+import cn.yzfy.crushcupidserver.agent.SourceAnalysisService;
 import cn.yzfy.crushcupidserver.common.DocumentTextExtractor;
 import cn.yzfy.crushcupidserver.common.Result;
 import cn.yzfy.crushcupidserver.common.TextExtractor;
@@ -53,6 +54,7 @@ public class CrushSourceController {
     private final CrushVersionService crushVersionService;
     private final CrushBuildService crushBuildService;
     private final OcrService ocrService;
+    private final SourceAnalysisService sourceAnalysisService;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/sources")
@@ -64,11 +66,15 @@ public class CrushSourceController {
         ChatSource source = new ChatSource();
         source.setCrushId(crushId);
         BeanUtil.copyProperties(dto, source);
-//        source.setFileType(dto.getType() == null ? SourceType.TEXT.name() : dto.getType().name());
-//        source.setFileName(dto.getFileName());
-//        source.setContent(TextExtractor.sanitize(dto.getContent()));
-//        source.setMessageCount(0);
-//        source.setCreatedAt(new Date());
+        long updated = System.currentTimeMillis();
+        String raw = TextExtractor.sanitize(dto.getContent());
+        source.setContent(raw);
+        source.setFileName(StrUtil.blankToDefault(dto.getFileName(), null));
+        source.setFileType(dto.getType() == null ? SourceType.TEXT.name() : dto.getType().name());
+        source.setMessageCount(0);
+        source.setCreatedAt(new Date());
+        source.setRawAnalysis(sourceAnalysisService.analyze(crushService.getById(crushId), source.getFileName(), raw));
+        source.setParsedAt(new Date(updated));
         chatSourceService.save(source);
         return Result.ok(toSourceVO(source));
     }
@@ -94,14 +100,19 @@ public class CrushSourceController {
         } catch (Exception e) {
             throw new BizException("解析文件失败：" + e.getMessage());
         }
+        String fileName = file.getOriginalFilename();
+        String rawContent = TextExtractor.sanitize(content);
         ChatSource source = new ChatSource();
         source.setCrushId(crushId);
         source.setFileType(StrUtil.blankToDefault(type,
-                image ? SourceType.PHOTO.name() : inferType(file.getOriginalFilename())));
-        source.setFileName(file.getOriginalFilename());
-        source.setContent(content);
+                image ? SourceType.PHOTO.name() : inferType(fileName)));
+        source.setFileName(fileName);
+        source.setContent(rawContent);
         source.setMessageCount(0);
         source.setCreatedAt(new Date());
+        long parsedAt = System.currentTimeMillis();
+        source.setRawAnalysis(sourceAnalysisService.analyze(crushService.getById(crushId), fileName, rawContent));
+        source.setParsedAt(new Date(parsedAt));
         chatSourceService.save(source);
         return Result.ok(toSourceVO(source));
     }
@@ -213,6 +224,7 @@ public class CrushSourceController {
         SourceVO vo = new SourceVO();
         BeanUtils.copyProperties(s, vo);
         vo.setType(s.getFileType());
+        vo.setAnalysis(s.getRawAnalysis());
         return vo;
     }
 

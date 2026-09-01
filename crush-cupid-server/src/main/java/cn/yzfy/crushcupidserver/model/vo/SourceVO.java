@@ -20,6 +20,9 @@ public class SourceVO {
 
     private String content;
 
+    /** LLM 理解解析结果（rawAnalysis），用于展示「解析后」的提炼内容 */
+    private String analysis;
+
     private Integer messageCount;
 
     private Date createdAt;

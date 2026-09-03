@@ -159,10 +159,23 @@
       <!-- 关系分析弹窗（她不一样引擎） -->
       <a-modal
         v-model:open="relOpen"
-        :title="relTitle"
         width="860"
         :footer="null"
       >
+        <template #title>
+          <div class="rel-modal-title">
+            <span>{{ relTitle }}</span>
+            <a-dropdown v-if="relResult && relResult.reportUrl">
+              <a-button size="small" type="primary" ghost class="rel-download-btn">⬇ 下载报告</a-button>
+              <template #overlay>
+                <a-menu @click="onDownloadMenuClick">
+                  <a-menu-item key="html">HTML 版</a-menu-item>
+                  <a-menu-item key="pdf">PDF 版</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
+        </template>
         <template v-if="relLoading">
           <div class="rel-loading">
             <a-spin size="large" />
@@ -398,6 +411,77 @@ async function openRelationAnalysis() {
 function openReport(url: string) {
   reportViewUrl.value = url
   reportViewOpen.value = true
+}
+
+/** 下载 she-love-me HTML 关系分析报告 */
+async function downloadRelReport() {
+  const url = relResult.value?.reportUrl
+  if (!url) return
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) throw new Error('下载失败：HTTP ' + resp.status)
+    const blob = await resp.blob()
+    const name = url.split('/').pop() || 'relationship_report.html'
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `关系分析报告_${name}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(a.href)
+    message.success('报告已下载')
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '下载失败')
+  }
+}
+
+/** 下载下拉菜单 */
+async function onDownloadMenuClick({ key }: { key: string }) {
+  if (key === 'html') await downloadRelReport()
+  else if (key === 'pdf') await downloadRelPdf()
+}
+
+/** 下载 she-love-me HTML 报告为 PDF（html2pdf.js：html2canvas 渲染 → jsPDF 导出） */
+async function downloadRelPdf() {
+  const url = relResult.value?.reportUrl
+  if (!url) return
+  const loadingKey = 'relPdf'
+  message.loading({ content: '正在渲染报告为 PDF…', key: loadingKey })
+  let iframe: HTMLIFrameElement | null = null
+  try {
+    const html2pdf = (await import('html2pdf.js')).default
+    iframe = document.createElement('iframe')
+    iframe.style.position = 'fixed'
+    iframe.style.right = '0'
+    iframe.style.bottom = '0'
+    iframe.style.width = '0'
+    iframe.style.height = '0'
+    iframe.style.border = '0'
+    document.body.appendChild(iframe)
+    iframe.src = url
+    await new Promise<void>((resolve, reject) => {
+      const t = window.setTimeout(() => reject(new Error('报告加载超时')), 30000)
+      iframe!.onload = () => { window.clearTimeout(t); resolve() }
+      iframe!.onerror = () => { window.clearTimeout(t); reject(new Error('报告加载失败')) }
+    })
+    const doc = iframe.contentDocument || (iframe.contentWindow as unknown as { document: Document }).document
+    if (!doc || !doc.body) throw new Error('无法读取报告内容')
+    const name = url.split('/').pop() || 'relationship_report'
+    const opt = {
+      margin: 8,
+      filename: `关系分析报告_${name.replace(/\.html$/i, '')}.pdf`,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, useCORS: true, windowWidth: doc.body.scrollWidth || undefined },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+    }
+    await html2pdf().set(opt).from(doc.body).save()
+    iframe.remove()
+    message.success({ content: 'PDF 已下载', key: loadingKey })
+  } catch (e) {
+    if (iframe) iframe.remove()
+    message.error({ content: e instanceof Error ? e.message : 'PDF 生成失败', key: loadingKey })
+  }
 }
 
 /* ---------- 报告 ---------- */
@@ -783,6 +867,18 @@ onMounted(() => {
 }
 
 /* 关系分析（她不一样引擎） */
+.rel-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-right: 4px;
+}
+
+.rel-download-btn {
+  font-size: 12px;
+}
+
 .rel-error {
   margin-bottom: 16px;
 }

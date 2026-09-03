@@ -51,6 +51,12 @@
 - `CupidAgent.java`：`appendStickerGuide()` 两步法表情包指引 prompt，LLM 输出 `[[sticker:情绪]]` 标记 → 后端替换为真实图片 URL 独立气泡。
 - 语音情感：CosyVoice instruction 支持情感；本机实测语音 key 为 V3 模型（V3.5 未接通），使用 V3 音色 ID 可用。
 
+### 5. 关系分析报告下载（HTML / PDF）
+
+- 关系分析报告弹窗标题栏右上角新增「⬇ 下载报告」下拉菜单，支持 **HTML 版** / **PDF 版** 两种格式下载。
+- HTML 版：直接下载完整报告文件（`.html`）。
+- PDF 版：前端隐藏 iframe 加载报告 → `html2canvas` 渲染 → `jsPDF` 导出多页 A4 PDF（依赖 `html2pdf.js`）。
+
 ### 敏感信息说明
 
 - 未在 yml / 代码中写入明文 API Key（保持 `${DASHSCOPE_API_KEY:...}` 占位，靠环境变量注入，避免密钥落盘）。

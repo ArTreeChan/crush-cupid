@@ -323,6 +323,3 @@ crush-cupid-server/                      crush-cupid-web/
 ## License
 
 MIT
-## Star History
-
-[![RepoStars](https://repostars.dev/api/embed?repo=xiaoheizi8/crush-skills)](https://repostars.dev/?repos=xiaoheizi8/crush-skills)

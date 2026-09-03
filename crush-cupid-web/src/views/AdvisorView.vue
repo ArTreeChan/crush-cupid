@@ -441,21 +441,20 @@ async function onDownloadMenuClick({ key }: { key: string }) {
   else if (key === 'pdf') await downloadRelPdf()
 }
 
-/** 下载 she-love-me HTML 报告为 PDF（html2pdf.js：html2canvas 渲染 → jsPDF 导出） */
+/** 下载 she-love-me HTML 报告为 PDF（浏览器打印引擎：iframe 加载 → 强制打印背景 → 另存为 PDF） */
 async function downloadRelPdf() {
   const url = relResult.value?.reportUrl
   if (!url) return
   const loadingKey = 'relPdf'
-  message.loading({ content: '正在渲染报告为 PDF…', key: loadingKey })
+  message.loading({ content: '正在加载报告并准备打印…', key: loadingKey })
   let iframe: HTMLIFrameElement | null = null
   try {
-    const html2pdf = (await import('html2pdf.js')).default
     iframe = document.createElement('iframe')
     iframe.style.position = 'fixed'
-    iframe.style.right = '0'
-    iframe.style.bottom = '0'
-    iframe.style.width = '0'
-    iframe.style.height = '0'
+    iframe.style.left = '-9999px'
+    iframe.style.top = '0'
+    iframe.style.width = '960px'
+    iframe.style.height = '1200px'
     iframe.style.border = '0'
     document.body.appendChild(iframe)
     iframe.src = url
@@ -464,20 +463,19 @@ async function downloadRelPdf() {
       iframe!.onload = () => { window.clearTimeout(t); resolve() }
       iframe!.onerror = () => { window.clearTimeout(t); reject(new Error('报告加载失败')) }
     })
-    const doc = iframe.contentDocument || (iframe.contentWindow as unknown as { document: Document }).document
+    // 等待 Chart.js 图表与字体渲染完成
+    await new Promise(r => setTimeout(r, 3000))
+    const win = iframe.contentWindow
+    const doc = win?.document
     if (!doc || !doc.body) throw new Error('无法读取报告内容')
-    const name = url.split('/').pop() || 'relationship_report'
-    const opt = {
-      margin: 8,
-      filename: `关系分析报告_${name.replace(/\.html$/i, '')}.pdf`,
-      image: { type: 'jpeg', quality: 0.95 },
-      html2canvas: { scale: 2, useCORS: true, windowWidth: doc.body.scrollWidth || undefined },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
-    }
-    await html2pdf().set(opt).from(doc.body).save()
-    iframe.remove()
-    message.success({ content: 'PDF 已下载', key: loadingKey })
+    // 强制打印背景色/背景图，避免打印时深色主题丢失
+    const style = doc.createElement('style')
+    style.textContent =
+      '* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } @page { margin: 0; }'
+    doc.head.appendChild(style)
+    message.success({ content: '报告已就绪，请在打印窗口选择「另存为 PDF」保存', key: loadingKey })
+    win!.focus()
+    win!.print()
   } catch (e) {
     if (iframe) iframe.remove()
     message.error({ content: e instanceof Error ? e.message : 'PDF 生成失败', key: loadingKey })

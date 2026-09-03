@@ -43,6 +43,7 @@
 - 关系报告入口替换为「她不一样（she-love-me）」分析引擎，保留原有自由咨询等功能。
 - 后端 `RelationshipService` 串联 Python 引擎流水线：聊天记录 HTML → `messages.json` → 全量统计 `stats.json` → 分层采样 `chat_history.txt` → LLM 深度鉴定 `analysis.json` → HTML 报告。
 - 引擎升级到 **mod 版**：`convert_weflow_html.py` 兼容 `--output` 参数（写固定路径），后端调用方式不变；工作产物位于 `D:/uploads/relationship/<crushId>/`。
+- 源项目：[863401402/she-love-me](https://github.com/863401402/she-love-me)
 
 ### 4. 表情包 & 语音情感
 

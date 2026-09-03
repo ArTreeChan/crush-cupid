@@ -1,0 +1,113 @@
+/**
+ * @className theme.css
+ * @description 全局主题样式：统一 Cupid 主题色变量、圆角、阴影、滚动条与 Ant Design 微调
+ * @author cupid
+ * @code global css
+ * @createTime 2026-08-26
+ */
+
+:root {
+  /* 主题色：粉玫渐变（Cupid 丘比特主题） */
+  --cupid-primary: #ff5a7a;
+  --cupid-primary-soft: #ff8aa0;
+  --cupid-gradient: linear-gradient(135deg, #ff6a8a 0%, #ff8e53 100%);
+  --cupid-gradient-soft: linear-gradient(135deg, #fff1f4 0%, #fff6f0 100%);
+
+  /* 中性色 */
+  --cupid-text: #2f2f3e;
+  --cupid-text-secondary: #6b6b7b;
+  --cupid-text-muted: #a0a0b0;
+  --cupid-border: #f0e3e7;
+  --cupid-bg-page: #f7f5f9;
+  --cupid-bg-card: #ffffff;
+
+  /* 圆角 */
+  --cupid-radius-sm: 8px;
+  --cupid-radius: 12px;
+  --cupid-radius-lg: 16px;
+
+  /* 阴影 */
+  --cupid-shadow-sm: 0 2px 8px rgba(255, 90, 122, 0.06);
+  --cupid-shadow: 0 6px 24px rgba(255, 90, 122, 0.10);
+  --cupid-shadow-lg: 0 12px 40px rgba(255, 90, 122, 0.14);
+}
+
+/* 全局背景 */
+body {
+  margin: 0;
+  background: var(--cupid-bg-page);
+  color: var(--cupid-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+}
+
+/* 覆盖 Ant Design 主色，使 ant-btn-primary 等使用 Cupid 主题色 */
+.ant-btn-primary {
+  background: var(--cupid-gradient);
+  border: none;
+  box-shadow: 0 4px 12px rgba(255, 90, 122, 0.25);
+}
+
+.ant-btn-primary:hover,
+.ant-btn-primary:focus {
+  background: linear-gradient(135deg, #ff7a98 0%, #ffa066 100%) !important;
+  border: none !important;
+}
+
+/* 卡片统一圆角与阴影 */
+.ant-card {
+  border-radius: var(--cupid-radius) !important;
+  border: 1px solid var(--cupid-border) !important;
+  box-shadow: var(--cupid-shadow-sm);
+  overflow: hidden;
+}
+
+.ant-card-head {
+  border-bottom: 1px solid var(--cupid-border) !important;
+  min-height: 44px !important;
+}
+
+/* 表单输入聚焦时使用主题色边框 */
+.ant-input:focus,
+.ant-input:focus-within,
+.ant-select-focused .ant-select-selector,
+.ant-input-affix-wrapper-focused,
+.ant-picker-focused {
+  border-color: var(--cupid-primary) !important;
+  box-shadow: 0 0 0 2px rgba(255, 90, 122, 0.15) !important;
+}
+
+/* 全局滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 90, 122, 0.25);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 90, 122, 0.45);
+}
+
+/* 页面淡入动画 */
+@keyframes cupid-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.cupid-fade-in {
+  animation: cupid-fade-in 0.3s ease-out;
+}

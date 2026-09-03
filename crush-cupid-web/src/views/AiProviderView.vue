@@ -1,0 +1,391 @@
+
+<template>
+  <PageContainer
+    icon="⚙️"
+    title="大模型 API"
+    subtitle="自定义 OpenAI 兼容供应商 · 增删改即生效，无需重启"
+  >
+    <template #extra>
+      <a-button type="primary" @click="openCreate">
+        <span>➕</span>&nbsp;新增供应商
+      </a-button>
+      <a-button @click="load">
+        <span>🔄</span>&nbsp;刷新
+      </a-button>
+    </template>
+
+    <div class="provider-list cupid-fade-in">
+      <a-alert
+        type="info"
+        show-icon
+        class="provider-alert"
+        message="运行时可增删改自定义大模型供应商，保存后立即生效（无需改配置文件 / 重启）。对话大模型走 OpenAI 兼容协议用于文本聊天；语音大模型走阿里云 CosyVoice 用于语音合成，可单独设置默认音色。"
+      />
+
+      <a-table
+        :data-source="providers"
+        :columns="columns"
+        row-key="id"
+        :loading="loading"
+        size="middle"
+        class="provider-table"
+        :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'name'">
+            <div class="name-cell">
+              <div class="name-cell__avatar">{{ record.type === 'voice' ? '🎙️' : '🤖' }}</div>
+              <div class="name-cell__text">
+                <div class="name-cell__name">
+                  {{ record.name }}
+                  <a-tag v-if="record.isDefault" color="pink" class="default-tag">默认</a-tag>
+                </div>
+                <div class="name-cell__slug">{{ record.providerKey }}</div>
+              </div>
+            </div>
+          </template>
+          <template v-if="column.key === 'type'">
+            <a-tag :color="record.type === 'voice' ? 'purple' : 'blue'">
+              {{ record.type === 'voice' ? '语音大模型' : '对话大模型' }}
+            </a-tag>
+          </template>
+          <template v-if="column.key === 'feature'">
+            <a-tag :color="record.type === 'voice' ? 'purple' : 'blue'">
+              {{ record.type === 'voice' ? '语音合成' : '文本对话' }}
+            </a-tag>
+          </template>
+          <template v-if="column.key === 'temperature'">
+            {{ record.type === 'voice' ? '—' : (record.temperature ?? '—') }}
+          </template>
+          <template v-if="column.key === 'action'">
+            <a-space size="middle">
+              <a v-if="!record.isDefault" class="action-link" @click="setDefault(record)">
+                设为默认{{ record.type === 'voice' ? '语音' : '' }}
+              </a>
+              <a-divider v-if="!record.isDefault" type="vertical" class="action-divider" />
+              <a class="action-link" @click="openEdit(record)">编辑</a>
+              <a-divider type="vertical" class="action-divider" />
+              <a-popconfirm title="确定删除该供应商？" @confirm="remove(record)">
+                <a class="action-link action-link--danger">删除</a>
+              </a-popconfirm>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+
+      <!-- 新建/编辑弹窗 -->
+      <a-modal
+        v-model:open="modalOpen"
+        :title="editing ? '编辑供应商' : '新增供应商'"
+        :confirm-loading="saving"
+        width="600"
+        :ok-text="editing ? '保存' : '创建'"
+        @ok="submit"
+      >
+        <a-form :model="form" :label-col="{ span: 6 }" :wrapper-col="{ span: 17 }" class="provider-form">
+          <a-form-item label="供应商类型" required>
+            <a-radio-group v-model:value="formType" button-style="solid" :disabled="!!editing">
+              <a-radio-button value="chat">💬 对话大模型</a-radio-button>
+              <a-radio-button value="voice">🎙️ 语音大模型</a-radio-button>
+            </a-radio-group>
+            <div class="type-hint">
+              {{ formType === 'voice'
+                ? '语音大模型走阿里云 CosyVoice 协议，用于把 AI 回复合成为语音。'
+                : '对话大模型走 OpenAI 兼容协议，用于文本聊天。' }}
+            </div>
+          </a-form-item>
+          <a-form-item label="备注名" required v-if="formType === 'chat'">
+            <a-input v-model:value="form.name" :placeholder="formType === 'voice' ? '如：我的 CosyVoice' : '如：自定义 OpenAI'" />
+          </a-form-item>
+          <a-form-item label="供应商代号" required v-if="formType === 'chat'">
+            <a-input v-model:value="form.providerKey" :disabled="!!editing" :placeholder="formType === 'voice' ? '如 my-voice' : '如 my-openai'" />
+          </a-form-item>
+          <a-form-item label="Base URL" required v-if="formType === 'chat'">
+            <a-input v-model:value="form.baseUrl" :placeholder="formType === 'voice' ? 'https://dashscope.aliyuncs.com' : 'https://api.deepseek.com 或 .../compatible-mode/v1'" />
+          </a-form-item>
+          <a-form-item label="API Key" required>
+            <a-input-password v-model:value="form.apiKey" :placeholder="editing ? '留空则不修改' : 'sk-...' " />
+          </a-form-item>
+          <a-form-item label="模型名" required v-if="formType === 'chat'">
+            <a-input v-model:value="form.model" :placeholder="formType === 'voice' ? '如 cosyvoice-v3-flash / cosyvoice-v3.5-plus' : '如 deepseek-chat / gpt-4o / qwen-plus'" />
+          </a-form-item>
+
+          <!-- 对话大模型专属字段 -->
+          <template v-if="formType === 'chat'">
+            <a-form-item label="温度">
+              <a-slider v-model:value="formTemperature" :min="0" :max="2" :step="0.1" />
+            </a-form-item>
+            <a-form-item label="最大 token">
+              <a-input-number v-model:value="form.maxTokens" :min="1" :max="128000" placeholder="可选" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="能力范围">
+              <div class="capabilities-hint">此处供应商仅用于<b>文本对话</b>；视觉（看图）与语音能力由系统配置文件（yml）统一管理，无需在此勾选</div>
+            </a-form-item>
+          </template>
+
+          <!-- 语音大模型专属字段 -->
+          <template v-else>
+            <a-form-item label="说明">
+              <div class="capabilities-hint">
+                语音大模型只需配置 API KEY，用于运行时切换不同账号的密钥。<br />
+                接入地址（Base URL）、模型名从配置文件（yml）读取；<br />
+                音色（voice_id）在<b>暗恋对象</b>页面单独配置。
+              </div>
+            </a-form-item>
+          </template>
+        </a-form>
+      </a-modal>
+    </div>
+  </PageContainer>
+</template>
+
+<script setup lang="ts">
+/**
+ * 大模型 API 管理页：运行时可增删改自定义大模型供应商，即时生效。
+ * 支持对话大模型（chat）和语音大模型（voice）两种类型。
+ */
+import { onMounted, reactive, ref } from 'vue'
+import { message } from 'ant-design-vue'
+import {
+  createAiProvider,
+  deleteAiProvider,
+  listAiProviders,
+  updateAiProvider,
+} from '@/api'
+import type { AiProvider, AiProviderPayload } from '@/types'
+import PageContainer from '@/components/PageContainer.vue'
+
+const columns = [
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
+  { title: '供应商', key: 'name', width: 220 },
+  { title: '类型', key: 'type', width: 110 },
+  { title: 'Model', dataIndex: 'model', key: 'model', width: 200 },
+  { title: 'Base URL', dataIndex: 'baseUrl', key: 'baseUrl' },
+  { title: '能力', key: 'feature', width: 160 },
+  { title: '温度', key: 'temperature', width: 70 },
+  { title: '操作', key: 'action', width: 220 },
+]
+
+const providers = ref<AiProvider[]>([])
+const loading = ref(false)
+const modalOpen = ref(false)
+const saving = ref(false)
+const editing = ref<AiProvider | null>(null)
+const formType = ref<'chat' | 'voice'>('chat')
+
+const form = reactive<AiProviderPayload>({
+  name: '',
+  providerKey: '',
+  baseUrl: '',
+  apiKey: '',
+  model: '',
+  temperature: 0.7,
+  topP: undefined,
+  maxTokens: undefined,
+  capabilities: [],
+  type: 'chat',
+  voice: '',
+})
+
+const formTemperature = ref(0.7)
+
+function resetForm() {
+  Object.assign(form, {
+    name: '',
+    providerKey: '',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    temperature: 0.7,
+    topP: undefined,
+    maxTokens: undefined,
+    capabilities: [],
+    type: 'chat',
+    voice: '',
+  })
+  formType.value = 'chat'
+  formTemperature.value = 0.7
+}
+
+async function load() {
+  loading.value = true
+  try {
+    providers.value = await listAiProviders()
+  } finally {
+    loading.value = false
+  }
+}
+
+function openCreate() {
+  editing.value = null
+  resetForm()
+  modalOpen.value = true
+}
+
+function openEdit(p: AiProvider) {
+  editing.value = p
+  const t = p.type === 'voice' ? 'voice' : 'chat'
+  formType.value = t
+  Object.assign(form, {
+    name: p.name,
+    providerKey: p.providerKey,
+    baseUrl: p.baseUrl,
+    apiKey: p.apiKey || undefined,
+    model: p.model,
+    temperature: p.temperature ?? 0.7,
+    topP: p.topP,
+    maxTokens: p.maxTokens,
+    capabilities: p.capabilities ?? [],
+    type: t,
+    voice: p.voice || '',
+  })
+  formTemperature.value = p.temperature ?? 0.7
+  modalOpen.value = true
+}
+
+async function submit() {
+  if (formType.value === 'voice') {
+    // 语音大模型只填 API KEY，备注名/代号系统自动生成
+    if (!form.apiKey) {
+      message.warning('API KEY 为必填')
+      return
+    }
+    if (!editing.value) {
+      const ts = Date.now()
+      form.providerKey = `voice-${ts}`
+      form.name = `语音供应商 ${new Date(ts).toLocaleString('zh-CN', { hour12: false })}`
+    }
+  } else {
+    if (!form.name || !form.providerKey) {
+      message.warning('备注名 / 供应商代号 为必填')
+      return
+    }
+    if (!form.baseUrl || !form.model) {
+      message.warning('对话大模型的 Base URL / 模型名 为必填')
+      return
+    }
+  }
+  saving.value = true
+  try {
+    const payload: AiProviderPayload = {
+      ...form,
+      type: formType.value,
+      temperature: formType.value === 'chat' ? formTemperature.value : undefined,
+    }
+    // 语音大模型只提交 API KEY，baseUrl/model 从 yml 读取
+    if (formType.value === 'voice') {
+      payload.baseUrl = undefined
+      payload.model = undefined
+    }
+    if (editing.value) {
+      await updateAiProvider(editing.value.id, payload)
+      message.success('已保存并生效')
+    } else {
+      await createAiProvider(payload)
+      message.success('已创建并生效')
+    }
+    modalOpen.value = false
+    await load()
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function setDefault(p: AiProvider) {
+  try {
+    await updateAiProvider(p.id, { isDefault: true })
+    message.success(`已将「${p.name}」设为默认${p.type === 'voice' ? '语音供应商' : '供应商'}`)
+    await load()
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '设置失败')
+  }
+}
+
+async function remove(p: AiProvider) {
+  try {
+    await deleteAiProvider(p.id)
+    message.success('已删除')
+    await load()
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '删除失败')
+  }
+}
+
+onMounted(load)
+</script>
+
+<style scoped>
+.provider-alert {
+  margin-bottom: 16px;
+  border-radius: var(--cupid-radius-sm);
+}
+
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.name-cell__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: var(--cupid-gradient-soft);
+  border: 1px solid var(--cupid-border);
+  flex-shrink: 0;
+}
+
+.name-cell__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cupid-text);
+}
+
+.default-tag {
+  margin-left: 6px;
+}
+
+.name-cell__slug {
+  font-size: 12px;
+  color: var(--cupid-text-muted);
+  margin-top: 2px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.action-link {
+  color: var(--cupid-primary);
+  cursor: pointer;
+}
+
+.action-link--danger {
+  color: #ff4d4f;
+}
+
+.action-divider {
+  margin: 0 4px;
+}
+
+.capabilities-hint {
+  font-size: 12px;
+  color: var(--cupid-text-muted);
+  margin-top: 4px;
+}
+
+.type-hint {
+  font-size: 12px;
+  color: var(--cupid-text-muted);
+  margin-top: 6px;
+}
+
+.voice-hint {
+  font-size: 12px;
+  color: var(--cupid-text-muted);
+  margin-left: 6px;
+}
+</style>

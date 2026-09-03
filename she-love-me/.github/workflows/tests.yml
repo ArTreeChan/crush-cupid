@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "GEMINI.md"
+      - ".agents/skills/she-love-me/**"
+      - ".claude/skills/she-love-me/**"
+      - ".cursor/rules/she-love-me.mdc"
+      - ".github/copilot-instructions.md"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "GEMINI.md"
+      - ".agents/skills/she-love-me/**"
+      - ".claude/skills/she-love-me/**"
+      - ".cursor/rules/she-love-me.mdc"
+      - ".github/copilot-instructions.md"
+      - ".github/workflows/tests.yml"
+
+jobs:
+  python:
+    name: ${{ matrix.os }} / Python 3.12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compile scripts
+        run: python -m compileall -q scripts tests
+      - name: Run tests
+        run: python -m unittest discover -s tests -v

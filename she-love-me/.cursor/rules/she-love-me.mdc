@@ -1,0 +1,7 @@
+---
+description: End-to-end WeChat or QQ relationship analysis workflow
+globs:
+alwaysApply: true
+---
+
+When the user asks to import or analyze WeChat/QQ chat history, read and follow `.agents/skills/she-love-me/SKILL.md`. For Windows WeChat, execute the full automated exporter workflow in `.agents/skills/she-love-me/references/data-sources.md`, using weflow-cli first and CipherTalk CLI or its official desktop MCP as fallback. Keep private data under `vendor/`, `data/`, or `reports/`.

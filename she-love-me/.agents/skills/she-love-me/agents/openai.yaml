@@ -1,0 +1,8 @@
+interface:
+  display_name: "她不一样"
+  short_description: "分析微信或 QQ 聊天记录，生成恋爱关系诊断与 HTML 报告"
+  brand_color: "#E11D48"
+  default_prompt: "使用 $she-love-me 端到端获取并分析聊天记录、生成 HTML 报告；Windows 微信首选 weflow-cli，失败时自动回退 CipherTalk。"
+
+policy:
+  allow_implicit_invocation: true

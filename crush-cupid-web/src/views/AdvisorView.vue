@@ -872,7 +872,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding-right: 4px;
+  padding-right: 44px;
 }
 
 .rel-download-btn {

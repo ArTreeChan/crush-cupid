@@ -39,6 +39,9 @@ public class MultiChunkVO {
     /** 本次增量文本（sticker 类型时为完整图片 URL，一次性下发） */
     private String content;
 
+    /** 语音情感（[[emotion:情绪]] 标记解析后作用于该消息；可为 null 表示未标注） */
+    private String emotion;
+
     /** 整个流是否结束 */
     private boolean done;
 

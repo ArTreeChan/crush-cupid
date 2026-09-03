@@ -194,6 +194,8 @@ interface ChatMessage {
   content: string
   /** 气泡类型：text 普通文本（默认）；sticker 表情包；image 用户发的图片（content 为可渲染 data URL / URL） */
   kind?: 'text' | 'sticker' | 'image'
+  /** 语音情感（LLM 通过 [[emotion:情绪]] 标记给出，语音合成时映射为 instruction；可为空走手填语音风格） */
+  emotion?: string
   /** 语音 URL（合成后生成，便于气泡内 <audio> 播放）；无则未合成 */
   audioUrl?: string
   /** 是否正在合成语音 */
@@ -401,7 +403,7 @@ class MultiBubbleAccumulator {
     let pos = this.map.get(key)
     if (pos === undefined) {
       const isSticker = chunk.type === 'sticker'
-      messages.value.push({ role: 'assistant', content: '', kind: isSticker ? 'sticker' : 'text' })
+      messages.value.push({ role: 'assistant', content: '', kind: isSticker ? 'sticker' : 'text', emotion: isSticker ? undefined : chunk.emotion })
       pos = messages.value.length - 1
       this.map.set(key, pos)
     }
@@ -563,6 +565,29 @@ async function nudge() {
 /** 当前手动播放的音频（同一时间只播一条；切换 crush / 组件卸载时停止） */
 let currentAudio: HTMLAudioElement | null = null
 
+/**
+ * 语音情感标签 -> CosyVoice instruction 描述。
+ * LLM 输出的 [[emotion:情绪]] 标签经后端解析附带在消息上，这里映射成语音合成的情感指令；
+ * 词表与后端 CupidAgent.appendEmotionGuide 的可选情感保持一致。
+ */
+const EMOTION_INSTRUCTION: Record<string, string> = {
+  开心: '用开心轻快的语气说话，带点笑意，语速稍快',
+  撒娇: '用温柔撒娇的语气说话，带点笑意，语速稍慢，语气亲昵',
+  傲娇: '用傲娇别扭的语气说话，语速稍快，带点口是心非的感觉',
+  冷淡: '用冷淡平静的语气说话，语速平稳，情绪收敛',
+  难过: '用低落难过的语气说话，语速稍慢，声音低沉',
+  生气: '用生气不满的语气说话，语速稍快，语气有点冲',
+  委屈: '用委屈的语气说话，声音放软，带着一点鼻音',
+  温柔: '用温柔的语气说话，语速平稳，轻声细语',
+  平静: '用自然日常的语气说话，语速适中',
+  惊讶: '用惊讶意外的语气说话，音调提高',
+  可爱: '用可爱俏皮的语气说话，声音软糯，语速稍快',
+  吃瓜: '用八卦好奇的语气说话，声音轻快上扬',
+  疑惑: '用疑惑不解的语气说话，音调微微上扬，带着问号',
+  尴尬: '用尴尬小声的语气说话，音量放低，语气犹豫',
+  无语: '用无语无奈的语气说话，语速平稳，带点叹气感',
+}
+
 /** 停止当前手动播放 */
 function stopPlayback() {
   if (currentAudio) {
@@ -597,7 +622,9 @@ function synthesizeBubble(msg: ChatMessage, voice?: string, instruction?: string
 async function playVoice(msg: ChatMessage) {
   if (msg.role !== 'assistant' || msg.kind === 'sticker' || !msg.content) return
   stopPlayback()
-  await synthesizeBubble(msg, currentCrush.value?.voiceId, currentCrush.value?.voiceInstruction)
+  // 优先用消息自带的上下文情感标签（LLM 实时判断）映射语音情感；没有标签则回落手填的语音风格
+  const inst = (msg.emotion && EMOTION_INSTRUCTION[msg.emotion]) || currentCrush.value?.voiceInstruction
+  await synthesizeBubble(msg, currentCrush.value?.voiceId, inst)
   if (!msg.audioUrl) return
   currentAudio = new Audio(msg.audioUrl)
   void currentAudio.play().catch(() => {})

@@ -33,6 +33,11 @@ public class MessageSeparator {
     /** 表情包标记后缀 */
     public static final String MARKER_SUFFIX = "]]";
 
+    /** 语音情感标记前缀。LLM 输出形如 [[emotion:开心]]，用于控制语音合成的情感（不产生气泡） */
+    public static final String EMOTION_PREFIX = "[[emotion:";
+    /** 语音情感标记后缀 */
+    public static final String EMOTION_SUFFIX = "]]";
+
     /**
      * 模型常见的「发表情包」占位描述（部分模型不遵从 [[sticker:情绪]] 标记，改用文字描述）。
      * 后端在此兜底识别，把 "(此处发表了一个[情绪词]的表情包)" 这类文字描述替换为真实表情包气泡。
@@ -56,6 +61,9 @@ public class MessageSeparator {
 
     /** 当前消息序号 */
     private int index = 0;
+
+    /** 当前语音情感：由 [[emotion:情绪]] 标记设置，作用于后续文本消息的语音合成；空表示未标注 */
+    private String currentEmotion = null;
 
     /** 待处理缓冲区（可能含未完成的分隔符/表情包标记前缀） */
     private final StringBuilder buffer = new StringBuilder(512);
@@ -86,9 +94,11 @@ public class MessageSeparator {
                 String remain = buffer.toString()
                         .replace(SEPARATOR, "")
                         .replace(MARKER_PREFIX, "")
-                        .replace(MARKER_SUFFIX, "");
+                        .replace(MARKER_SUFFIX, "")
+                        .replace(EMOTION_PREFIX, "")
+                        .replace(EMOTION_SUFFIX, "");
                 if (!remain.isEmpty()) {
-                    out.add(new MultiChunkVO(index, remain, false));
+                    out.add(textVO(index, remain));
                 }
                 buffer.setLength(0);
             }
@@ -104,13 +114,35 @@ public class MessageSeparator {
         while (buffer.length() > 0) {
             int sepIdx = indexOf(buffer, SEPARATOR);
             int markStart = indexOf(buffer, MARKER_PREFIX);
+            int emoStart = indexOf(buffer, EMOTION_PREFIX);
+
+            // 语音情感标记优先处理（若它是最早出现的 token）：不产生气泡，仅更新当前语音情感
+            if (emoStart >= 0 && (sepIdx < 0 || emoStart < sepIdx) && (markStart < 0 || emoStart < markStart)) {
+                if (emoStart > 0) {
+                    emitBefore(out, emoStart);
+                    continue;
+                }
+                // 标记在 buffer 开头：找闭合括号
+                int emoEnd = indexOf(buffer, EMOTION_SUFFIX, EMOTION_PREFIX.length());
+                if (emoEnd < 0) {
+                    // 未闭合（情绪词可能跨 chunk）：保留全部缓冲等待后续 chunk
+                    return;
+                }
+                String emotion = substring(buffer, EMOTION_PREFIX.length(), emoEnd).trim();
+                if (!emotion.isEmpty()) {
+                    currentEmotion = emotion;
+                    log.info("[sep-emotion] 语音情感 -> {}", currentEmotion);
+                }
+                buffer.delete(0, emoEnd + EMOTION_SUFFIX.length());
+                continue;
+            }
 
             // 都没有：优先识别占位描述（"（此处发表了一个[情绪词]的表情包）" 等），转成表情包气泡
             if (markStart < 0 && sepIdx < 0) {
                 int phStart = findPlaceholder(buffer);
                 if (phStart >= 0) {
                     if (phStart > 0) {
-                        out.add(new MultiChunkVO(index, substring(buffer, 0, phStart), false));
+                        out.add(textVO(index, substring(buffer, 0, phStart)));
                         buffer.delete(0, phStart);
                     }
                     String ph = matchedPlaceholder(buffer);
@@ -118,6 +150,11 @@ public class MessageSeparator {
                         buffer.delete(0, ph.length());
                         // 表情包独占新气泡；从占位描述中提取情绪词，没有则兜底「开心」
                         String emotion = extractEmotion(ph);
+                        // 语音情感兜底：LLM 未输出 [[emotion:..]] 标记时，用表情包情绪词作为语音情感
+                        if (currentEmotion == null && emotion != null) {
+                            currentEmotion = emotion;
+                            log.info("[sep-emotion] 占位兜底语音情感 -> {}", currentEmotion);
+                        }
                         out.add(new MultiChunkVO(++index, MultiChunkVO.TYPE_STICKER, emotion, false));
                         index++;
                         log.info("[sep-debug] 占位兜底命中：{} -> sticker({})", ph, emotion);
@@ -128,7 +165,7 @@ public class MessageSeparator {
                 }
                 int safeLen = safeEmitLength();
                 if (safeLen > 0) {
-                    out.add(new MultiChunkVO(index, substring(buffer, 0, safeLen), false));
+                    out.add(textVO(index, substring(buffer, 0, safeLen)));
                     buffer.delete(0, safeLen);
                 }
                 return;
@@ -138,7 +175,7 @@ public class MessageSeparator {
             boolean sepFirst = sepIdx >= 0 && (markStart < 0 || sepIdx < markStart);
             if (sepFirst) {
                 if (sepIdx > 0) {
-                    out.add(new MultiChunkVO(index, substring(buffer, 0, sepIdx), false));
+                    out.add(textVO(index, substring(buffer, 0, sepIdx)));
                 }
                 index++;
                 buffer.delete(0, sepIdx + SEPARATOR.length());
@@ -159,6 +196,11 @@ public class MessageSeparator {
             int relEnd = markEnd - markStart;
             String emotion = substring(buffer, MARKER_PREFIX.length(), relEnd).trim();
             if (!emotion.isEmpty()) {
+                // 语音情感兜底：LLM 未输出 [[emotion:..]] 标记时，用表情包情绪词作为语音情感
+                if (currentEmotion == null) {
+                    currentEmotion = emotion;
+                    log.info("[sep-emotion] 表情包标记兜底语音情感 -> {}", currentEmotion);
+                }
                 // 表情包永远独占一个新气泡：LLM 常省略 ||| 直接输出「文本[[sticker:..]]」，
                 // 若沿用当前 index，前端会把同 index 的文本气泡覆盖成图片——必须翻页
                 out.add(new MultiChunkVO(++index, MultiChunkVO.TYPE_STICKER, emotion, false));
@@ -172,9 +214,16 @@ public class MessageSeparator {
     /** 输出缓冲区 [0, end) 的文本并截掉（非空才输出） */
     private void emitBefore(List<MultiChunkVO> out, int end) {
         if (end > 0) {
-            out.add(new MultiChunkVO(index, substring(buffer, 0, end), false));
+            out.add(textVO(index, substring(buffer, 0, end)));
             buffer.delete(0, end);
         }
+    }
+
+    /** 构造一条带当前语音情感的文本 VO */
+    private MultiChunkVO textVO(int idx, String content) {
+        MultiChunkVO vo = new MultiChunkVO(idx, content, false);
+        vo.setEmotion(currentEmotion);
+        return vo;
     }
 
     /**

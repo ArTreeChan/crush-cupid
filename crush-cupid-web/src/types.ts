@@ -182,6 +182,8 @@ export interface MultiChunk {
   index: number
   type?: 'text' | 'sticker'
   content: string
+  /** 语音情感（[[emotion:情绪]] 解析后的标签，可为空） */
+  emotion?: string
   done: boolean
 }
 

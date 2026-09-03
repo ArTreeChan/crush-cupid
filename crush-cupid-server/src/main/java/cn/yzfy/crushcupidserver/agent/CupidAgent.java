@@ -503,6 +503,7 @@ public class CupidAgent {
         appendLayer(sb, "Layer 4 关系行为", c.getPersonaLayer4());
         appendMultiMessageGuide(sb);
         appendStickerGuide(sb);
+        appendEmotionGuide(sb);
         return sb.toString();
     }
 
@@ -561,6 +562,23 @@ public class CupidAgent {
         sb.append("严禁用'（此处发表情包）''发了个表情'之类的文字描述代替真实表情包——想发表情包就必须直接输出 ")
           .append(MessageSeparator.MARKER_PREFIX).append("情绪").append(MessageSeparator.MARKER_SUFFIX)
           .append(" 标记，不要解释、不要占位文字。\n");
+    }
+
+    /**
+     * 追加语音情感标记指引：让模型在回复最开头输出 {@code [[emotion:情绪]]} 标记，
+     * 后端 {@link MessageSeparator} 解析后附加到消息，前端语音合成时映射为 CosyVoice instruction，
+     * 实现"联系上下文实时调整语音情感"。该标记不产生气泡、不显示给用户。
+     */
+    private void appendEmotionGuide(StringBuilder sb) {
+        sb.append("## 语音情感标记（必须）\n");
+        sb.append("每次回复，在第一条消息之前，必须且只能输出一个情感标记 ")
+          .append(MessageSeparator.EMOTION_PREFIX).append("情感词").append(MessageSeparator.EMOTION_SUFFIX)
+          .append("（单独一行，不含其它文字），然后再输出消息内容。\n");
+        sb.append("判断方法：先看对方最近 1-2 条消息和上下文的情绪，再结合你的 Layer 3 情感模式，决定这轮回复该用什么情感，输出对应标记。\n");
+        sb.append("可选情感词（只能从这些里选）：开心 / 撒娇 / 傲娇 / 冷淡 / 难过 / 生气 / 委屈 / 温柔 / 平静 / 惊讶。\n");
+        sb.append("该标记不会显示给用户，只用于控制语音语气；每轮回复只输出一个，放在所有消息之前，不要夹在句子中间。\n");
+        sb.append("示例：[[").append("emotion:撒娇").append("]]那你终于想起来找我啦～\n");
+        sb.append("拿不准就用 ").append(MessageSeparator.EMOTION_PREFIX).append("平静").append(MessageSeparator.EMOTION_SUFFIX).append("，绝不省略。\n");
     }
 
     public String buildMemory(Crush c) {
